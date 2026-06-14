@@ -1,0 +1,62 @@
+name: Deploy — Staging
+
+on:
+  workflow_run:
+    workflows: [Build & Push Docker Image]
+    types: [completed]
+    branches: [staging]
+
+jobs:
+  deploy-staging:
+    name: Deploy to staging VPS
+    runs-on: ubuntu-24.04
+    environment: staging
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Checkout (for scripts)
+        uses: actions/checkout@v4
+
+      - name: Determine image tag
+        id: tag
+        run: |
+          SHA="${{ github.event.workflow_run.head_sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          echo "image-tag=staging-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_DEPLOY_KEY }}
+          script: |
+            /opt/takeoff/scripts/deploy.sh staging ${{ steps.tag.outputs.image-tag }}
+
+      - name: Smoke test — GET /health
+        run: |
+          HEALTH_URL="https://staging.api.${{ vars.DOMAIN || 'takeoff.tn' }}/health"
+          echo "Testing ${HEALTH_URL}"
+          for i in $(seq 1 10); do
+            STATUS=$(curl -sk -u "${{ secrets.STAGING_BASIC_AUTH }}" "${HEALTH_URL}" | jq -r '.ok' 2>/dev/null || echo "false")
+            if [[ "${STATUS}" == "true" ]]; then
+              echo "Health check PASSED"
+              exit 0
+            fi
+            echo "  Attempt ${i}/10 — waiting..."
+            sleep 5
+          done
+          echo "Health check FAILED"
+          exit 1
+
+      - name: Notify Slack on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": ":x: Staging deploy FAILED for `${{ steps.tag.outputs.image-tag }}`\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

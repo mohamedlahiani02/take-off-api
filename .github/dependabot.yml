@@ -1,0 +1,29 @@
+version: 2
+
+updates:
+  # npm / pnpm packages
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Africa/Tunis
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - automated
+    ignore:
+      # Pin major versions manually
+      - dependency-name: "@nestjs/*"
+        update-types: ["version-update:semver-major"]
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - ci

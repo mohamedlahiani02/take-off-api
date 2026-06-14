@@ -1,0 +1,17 @@
+node_modules
+dist
+.tsbuildinfo
+.env
+.env.*
+!.env.example
+*.log
+coverage
+.nyc_output
+.git
+.github
+.idea
+.vscode
+*.pem
+*.key
+secrets/
+README.md

@@ -1,0 +1,74 @@
+version: '3.9'
+
+# ============================================================
+# Local development backing services
+# Usage: docker compose -f infra/local/docker-compose.yml up -d
+# ============================================================
+# Ports exposed to localhost only:
+#   Postgres : 5432
+#   Redis    : 6379
+#   Mailhog  : 1025 (SMTP) · 8025 (Web UI)
+#   MinIO    : 9000 (S3 API) · 9001 (Console)
+# ============================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: takeoff
+      POSTGRES_USER: takeoff
+      POSTGRES_PASSWORD: takeoff
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U takeoff -d takeoff"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --requirepass takeoff --save 60 1000
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "takeoff", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1025:1025"   # SMTP — configure RESEND_API_KEY to fake, use Mailhog in dev
+      - "127.0.0.1:8025:8025"   # Web UI: http://localhost:8025
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: takeoff
+      MINIO_ROOT_PASSWORD: takeoff123
+    ports:
+      - "127.0.0.1:9000:9000"   # S3-compatible API — set R2_ENDPOINT=http://localhost:9000
+      - "127.0.0.1:9001:9001"   # Web Console: http://localhost:9001
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:

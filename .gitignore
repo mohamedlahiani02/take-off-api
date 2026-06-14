@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.tsbuildinfo
+
+# Environment files — NEVER commit plaintext .env
+.env
+.env.local
+.env.*.local
+# .env.enc IS committed (SOPS-encrypted)
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Drizzle
+drizzle/meta/
+
+# Docker
+.docker/
+
+# Keys — NEVER commit private keys
+*.pem
+*.key
+jwt.private.pem
+jwt.public.pem
+
+# Secrets
+secrets/

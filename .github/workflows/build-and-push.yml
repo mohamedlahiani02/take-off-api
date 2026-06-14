@@ -1,0 +1,68 @@
+name: Build & Push Docker Image
+
+on:
+  push:
+    branches: [main, staging]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/take-off-api
+
+jobs:
+  build-and-push:
+    name: Build Docker image and push to GHCR
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      env-name: ${{ steps.env.outputs.name }}
+      sha-tag: ${{ steps.meta.outputs.sha-tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine environment name
+        id: env
+        run: |
+          if [[ "${{ github.ref_name }}" == "main" ]]; then
+            echo "name=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=staging" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        run: |
+          ENV="${{ steps.env.outputs.name }}"
+          SHA="${{ github.sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          SHA_TAG="${ENV}-${SHORT_SHA}"
+          LATEST_TAG="${ENV}-latest"
+          echo "sha-tag=${SHA_TAG}" >> "$GITHUB_OUTPUT"
+          echo "tags=${REGISTRY}/${{ env.IMAGE_NAME }}:${SHA_TAG},${REGISTRY}/${{ env.IMAGE_NAME }}:${LATEST_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
