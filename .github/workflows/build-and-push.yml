@@ -2,7 +2,7 @@ name: Build & Push Docker Image
 
 on:
   push:
-    branches: [main, staging]
+    branches: [main, production]
 
 env:
   REGISTRY: ghcr.io
@@ -28,7 +28,7 @@ jobs:
       - name: Determine environment name
         id: env
         run: |
-          if [[ "${{ github.ref_name }}" == "main" ]]; then
+          if [[ "${{ github.ref_name }}" == "production" ]]; then
             echo "name=prod" >> "$GITHUB_OUTPUT"
           else
             echo "name=staging" >> "$GITHUB_OUTPUT"
