@@ -1,0 +1,80 @@
+name: Deploy — Production
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (e.g. prod-abc1234)'
+        required: true
+
+jobs:
+  deploy-prod:
+    name: Deploy to production VPS
+    runs-on: ubuntu-24.04
+    environment: production    # Requires manual approval in GitHub UI
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
+
+    steps:
+      - name: Determine image tag
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "image-tag=${{ github.event.inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            SHA="${{ github.sha }}"
+            SHORT_SHA="${SHA:0:7}"
+            echo "image-tag=prod-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_DEPLOY_KEY }}
+          script: |
+            /opt/takeoff/scripts/deploy.sh prod ${{ steps.tag.outputs.image-tag }}
+
+      - name: Smoke test — GET /health
+        run: |
+          HEALTH_URL="https://api.${{ vars.DOMAIN || 'takeoff.tn' }}/health"
+          echo "Testing ${HEALTH_URL}"
+          for i in $(seq 1 10); do
+            STATUS=$(curl -sk "${HEALTH_URL}" | jq -r '.ok' 2>/dev/null || echo "false")
+            if [[ "${STATUS}" == "true" ]]; then
+              echo "Health check PASSED"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Health check FAILED"
+          exit 1
+
+      - name: Notify Slack on success
+        if: success()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": ":rocket: Production deploy SUCCEEDED — `${{ steps.tag.outputs.image-tag }}`\n${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      - name: Notify Slack on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": ":x: Production deploy FAILED — `${{ steps.tag.outputs.image-tag }}`\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

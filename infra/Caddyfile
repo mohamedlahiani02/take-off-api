@@ -1,0 +1,75 @@
+# ============================================================
+# /etc/caddy/Caddyfile — system Caddy configuration
+# Ref: INFRASTRUCTURE.md §3.2
+#
+# Env vars used (set in the Caddy systemd override or /etc/caddy/caddy.env):
+#   DOMAIN          takeoff.tn
+#   OPS_EMAIL       ops@takeoff.tn
+#   STAGING_HTPASSWD  deploy:<bcrypt-hash>
+# ============================================================
+{
+  email ops@{$DOMAIN:takeoff.tn}
+}
+
+# ── Production API ────────────────────────────────────────────
+api.{$DOMAIN:takeoff.tn} {
+  encode zstd gzip
+
+  reverse_proxy 127.0.0.1:3000 {
+    health_uri /health
+    health_interval 10s
+  }
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options    "nosniff"
+    X-Frame-Options           "DENY"
+    Referrer-Policy           "strict-origin-when-cross-origin"
+  }
+
+  log {
+    output file /var/log/caddy/api.log
+    format json
+  }
+}
+
+# ── Staging API (basic-auth guarded) ─────────────────────────
+staging.api.{$DOMAIN:takeoff.tn} {
+  # Protect staging from accidental indexing / access
+  # Generate hash: caddy hash-password --plaintext <your-password>
+  basicauth /* {
+    deploy {$STAGING_HTPASSWD:JDJhJDE0JFNPTVBMQUNFSE9MREVSfgfgfgfgfg}
+  }
+
+  encode zstd gzip
+
+  reverse_proxy 127.0.0.1:3001 {
+    health_uri /health
+    health_interval 10s
+  }
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options    "nosniff"
+  }
+
+  log {
+    output file /var/log/caddy/staging.log
+    format json
+  }
+}
+
+# ── Media server (local disk, Cloudflare caches at edge) ─────
+media.{$DOMAIN:takeoff.tn} {
+  root * /opt/takeoff/prod/media
+  file_server
+
+  header {
+    Cache-Control "public, max-age=604800, immutable"
+  }
+
+  log {
+    output file /var/log/caddy/media.log
+    format json
+  }
+}

@@ -1,0 +1,16 @@
+# Normalize line endings
+* text=auto eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+
+# Force LF for scripts
+*.sh text eol=lf
+Makefile text eol=lf

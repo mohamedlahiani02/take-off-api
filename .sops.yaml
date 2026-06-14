@@ -1,0 +1,27 @@
+# SOPS configuration for Take Off API secrets
+# Each environment uses a dedicated age keypair.
+# Replace the age<...> placeholders with your real public keys.
+# Private keys are stored:
+#   - On the VPS at /root/.config/sops/age/keys.txt
+#   - In GitHub Actions environment secrets (AGE_KEY_STAGING / AGE_KEY_PROD)
+#
+# Generate a keypair:  age-keygen -o keys.txt
+# Encrypt:             sops --encrypt --in-place .env
+# Decrypt:             sops --decrypt .env.enc > .env
+
+creation_rules:
+  # Staging environment
+  - path_regex: infra/staging/.*\.enc$
+    age:
+      - age1STAGING_PUBLIC_KEY_PLACEHOLDER_REPLACE_ME
+
+  # Production environment
+  - path_regex: infra/prod/.*\.enc$
+    age:
+      - age1PROD_PUBLIC_KEY_PLACEHOLDER_REPLACE_ME
+
+  # Fallback — any .enc file
+  - path_regex: \.enc$
+    age:
+      - age1STAGING_PUBLIC_KEY_PLACEHOLDER_REPLACE_ME
+      - age1PROD_PUBLIC_KEY_PLACEHOLDER_REPLACE_ME

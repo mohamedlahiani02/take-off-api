@@ -1,0 +1,94 @@
+version: '3.9'
+
+# ============================================================
+# Staging environment — /opt/takeoff/staging/docker-compose.yml
+# API bound to 127.0.0.1:3001 (Caddy proxies HTTPS → here)
+# Postgres + Redis + pgBackRest NEVER expose public ports
+# ============================================================
+# See INFRASTRUCTURE.md §3.1 for the canonical spec.
+# Secrets loaded from .env (decrypted by deploy.sh via SOPS).
+# ============================================================
+
+services:
+  api:
+    image: ghcr.io/${GHCR_ORG:-your-org}/take-off-api:${IMAGE_TAG:-staging-latest}
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+    ports:
+      - "127.0.0.1:3001:3001"
+    volumes:
+      - ./media:/app/media
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: takeoff
+    env_file: .env                  # reads POSTGRES_USER, POSTGRES_PASSWORD
+    networks:
+      - internal
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-takeoff} -d takeoff"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASS} --save 60 1000 --appendonly yes
+    networks:
+      - internal
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASS}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  pgbackrest:
+    image: pgbackrest/pgbackrest:latest
+    restart: unless-stopped
+    environment:
+      PGBACKREST_STANZA: takeoff-staging
+      PGBACKREST_REPO1_TYPE: s3
+      PGBACKREST_REPO1_S3_ENDPOINT: ${R2_ENDPOINT}
+      PGBACKREST_REPO1_S3_BUCKET: ${R2_BUCKET_BACKUPS}
+      PGBACKREST_REPO1_S3_KEY: ${R2_ACCESS_KEY}
+      PGBACKREST_REPO1_S3_KEY_SECRET: ${R2_SECRET_KEY}
+      PGBACKREST_REPO1_S3_REGION: auto
+      PGBACKREST_PG1_PATH: /var/lib/postgresql/data
+      PGBACKREST_PG1_HOST: postgres
+      PGBACKREST_PG1_PORT: "5432"
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+    volumes:
+      - postgres_data:/var/lib/postgresql/data:ro
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:

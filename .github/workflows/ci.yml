@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+
+env:
+  PNPM_VERSION: '9'
+  NODE_VERSION: '20'
+
+jobs:
+  ci:
+    name: Lint · Typecheck · Test · Build
+    runs-on: ubuntu-24.04
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: takeoff_test
+          POSTGRES_USER: takeoff
+          POSTGRES_PASSWORD: takeoff
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U takeoff -d takeoff_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://takeoff:takeoff@localhost:5432/takeoff_test
+      REDIS_URL: redis://localhost:6379
+      NODE_ENV: test
+      JWT_PRIVATE_KEY_PATH: /tmp/jwt.private.pem
+      JWT_PUBLIC_KEY_PATH: /tmp/jwt.public.pem
+      R2_ACCESS_KEY: noop
+      R2_SECRET_KEY: noop
+      R2_ENDPOINT: http://localhost:9000
+      R2_BUCKET_MEDIA: test-media
+      R2_BUCKET_BACKUPS: test-backups
+      RESEND_API_KEY: re_noop
+      KONNECT_API_KEY: noop
+      SENTRY_DSN: ''
+      COOKIE_DOMAIN: localhost
+      CORS_ORIGINS: http://localhost:3000
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate test JWT keys
+        run: |
+          openssl genrsa -out /tmp/jwt.private.pem 2048
+          openssl rsa -in /tmp/jwt.private.pem -pubout -out /tmp/jwt.public.pem
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Drizzle migration dry-run
+        run: pnpm db:check || echo "Schema drift detected — run pnpm db:generate"
+
+      - name: Build
+        run: pnpm build

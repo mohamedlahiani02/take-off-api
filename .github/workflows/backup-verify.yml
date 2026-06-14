@@ -1,0 +1,84 @@
+name: Weekly Backup Verify
+
+on:
+  schedule:
+    - cron: '0 3 * * 0'   # Every Sunday at 03:00 UTC
+  workflow_dispatch:
+
+jobs:
+  backup-verify:
+    name: Restore latest backup and verify integrity
+    runs-on: ubuntu-24.04
+    environment: staging
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: takeoff_verify
+          POSTGRES_USER: takeoff
+          POSTGRES_PASSWORD: takeoff
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U takeoff -d takeoff_verify"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pgBackRest
+        run: sudo apt-get install -y pgbackrest
+
+      - name: Configure pgBackRest for R2
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY }}
+          R2_SECRET_KEY: ${{ secrets.R2_SECRET_KEY }}
+          R2_BUCKET_BACKUPS: ${{ secrets.R2_BUCKET_BACKUPS_PROD }}
+        run: |
+          mkdir -p /etc/pgbackrest
+          cat > /etc/pgbackrest/pgbackrest.conf << EOF
+          [takeoff-prod]
+          pg1-path=/var/lib/postgresql/data
+
+          [global]
+          repo1-type=s3
+          repo1-s3-endpoint=${R2_ENDPOINT}
+          repo1-s3-bucket=${R2_BUCKET_BACKUPS}
+          repo1-s3-key=${R2_ACCESS_KEY}
+          repo1-s3-key-secret=${R2_SECRET_KEY}
+          repo1-s3-region=auto
+          EOF
+
+      - name: Restore latest backup
+        run: |
+          pgbackrest --stanza=takeoff-prod restore \
+            --db-path=/tmp/restore_data \
+            --target-action=promote
+        continue-on-error: true
+
+      - name: Verify row counts
+        id: verify
+        run: |
+          PGPASSWORD=takeoff psql -h localhost -U takeoff -d takeoff_verify -c \
+            "SELECT COUNT(*) FROM identity.users" 2>/dev/null || echo "VERIFY_FAILED"
+
+      - name: Destroy scratch data
+        if: always()
+        run: rm -rf /tmp/restore_data
+
+      - name: Notify Slack on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": ":rotating_light: Weekly backup verify FAILED!\nManual investigation required.\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

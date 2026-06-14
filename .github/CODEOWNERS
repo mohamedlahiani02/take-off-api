@@ -1,0 +1,15 @@
+# CODEOWNERS — reviewers for critical paths
+# Ref: INFRASTRUCTURE.md §6 (Branch model)
+
+# Default — all files require review
+*                           @your-org/backend-team
+
+# DB schema changes are high-risk — require explicit sign-off
+drizzle/schema/**           @your-org/backend-team
+drizzle/migrations/**       @your-org/backend-team
+
+# Infrastructure changes require ops sign-off
+infra/**                    @your-org/backend-team
+scripts/**                  @your-org/backend-team
+.github/workflows/**        @your-org/backend-team
+Dockerfile                  @your-org/backend-team
