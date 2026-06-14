@@ -56,7 +56,7 @@ jobs:
           echo "tags=${REGISTRY}/${{ env.IMAGE_NAME }}:${SHA_TAG},${REGISTRY}/${{ env.IMAGE_NAME }}:${LATEST_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
