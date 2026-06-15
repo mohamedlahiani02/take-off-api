@@ -20,7 +20,7 @@ class MatchService(
 
     fun list(userId: UUID, page: Int, size: Int): Page<MatchDto> {
         val pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "playedAt"))
-        return matchRepo.findAllByUserId(userId, pageable).map { MatchDto.from(it) }
+        return matchRepo.findAllByUser_Id(userId, pageable).map { MatchDto.from(it) }
     }
 
     @Transactional

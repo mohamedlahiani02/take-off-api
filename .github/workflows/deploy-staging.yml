@@ -33,13 +33,13 @@ jobs:
           script: |
             /opt/takeoff/scripts/deploy.sh staging ${{ steps.tag.outputs.image-tag }}
 
-      - name: Smoke test — GET /health
+      - name: Smoke test — GET /actuator/health
         run: |
-          HEALTH_URL="https://staging.api.${{ vars.DOMAIN || 'takeoff.tn' }}/health"
+          HEALTH_URL="https://staging.api.${{ vars.DOMAIN || 'takeoff.tn' }}/actuator/health"
           echo "Testing ${HEALTH_URL}"
           for i in $(seq 1 10); do
-            STATUS=$(curl -sk -u "${{ secrets.STAGING_BASIC_AUTH }}" "${HEALTH_URL}" | jq -r '.ok' 2>/dev/null || echo "false")
-            if [[ "${STATUS}" == "true" ]]; then
+            STATUS=$(curl -sk "${HEALTH_URL}" | jq -r '.status' 2>/dev/null || echo "DOWN")
+            if [[ "${STATUS}" == "UP" ]]; then
               echo "Health check PASSED"
               exit 0
             fi
