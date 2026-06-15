@@ -33,7 +33,7 @@ class Match(
 
     var score: String? = null,
 
-    @Column(name = "opponent_level")
+    @Column(name = "opponent_level", columnDefinition = "numeric")
     var opponentLevel: Double,
 
     var delta: Int = 0,
