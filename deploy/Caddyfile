@@ -1,0 +1,6 @@
+# Caddy reverse proxy with automatic HTTPS (Let's Encrypt).
+# {$API_DOMAIN} is injected from deploy/.env (e.g. api.takeoff.tn).
+{$API_DOMAIN} {
+	encode gzip
+	reverse_proxy api:8080
+}
