@@ -20,7 +20,7 @@ class OrderService(
 
     fun myOrders(userId: UUID, page: Int, size: Int): Page<OrderDto> {
         val pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"))
-        return orderRepo.findAllByUserId(userId, pageable).map { OrderDto.from(it) }
+        return orderRepo.findAllByUser_Id(userId, pageable).map { OrderDto.from(it) }
     }
 
     fun getById(id: UUID, userId: UUID): OrderDto {

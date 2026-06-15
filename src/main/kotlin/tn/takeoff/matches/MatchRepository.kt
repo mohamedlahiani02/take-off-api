@@ -8,7 +8,7 @@ import java.util.UUID
 
 interface MatchRepository : JpaRepository<Match, UUID> {
 
-    fun findAllByUserId(userId: UUID, pageable: Pageable): Page<Match>
+    fun findAllByUser_Id(userId: UUID, pageable: Pageable): Page<Match>
 
     @Query("""
         SELECT u.id, u.name, u.padel_level, u.points,
