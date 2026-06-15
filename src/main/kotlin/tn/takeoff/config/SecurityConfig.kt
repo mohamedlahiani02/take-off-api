@@ -22,9 +22,11 @@ class SecurityConfig(private val jwtAuthFilter: JwtAuthFilter) {
     fun filterChain(http: HttpSecurity): SecurityFilterChain {
         http
             .csrf { it.disable() }
+            .cors { }
             .sessionManagement { it.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
             .authorizeHttpRequests { auth ->
                 auth
+                    .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                     .requestMatchers(HttpMethod.POST, "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/refresh").permitAll()
                     .requestMatchers(HttpMethod.GET, "/api/v1/products/**", "/api/v1/courts/**", "/api/v1/leaderboard").permitAll()
                     .requestMatchers(HttpMethod.POST, "/api/v1/coaching/inquiry").permitAll()
