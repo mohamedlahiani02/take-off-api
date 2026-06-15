@@ -33,8 +33,8 @@ dependencies {
 	// JWT (Auth0 java-jwt — RS256)
 	implementation("com.auth0:java-jwt:4.4.0")
 
-	// SpringDoc OpenAPI (Swagger UI at /api/docs)
-	implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.6.0")
+	// SpringDoc OpenAPI (Swagger UI at /swagger-ui.html). 2.8.x required for Spring Boot 3.5
+	implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.9")
 
 	runtimeOnly("org.postgresql:postgresql")
 	testImplementation("org.springframework.boot:spring-boot-starter-test")
