@@ -1,54 +1,45 @@
 # ============================================================
-# Take Off API — multi-stage Docker build
-# Stage 1: deps    — install all dependencies (cached)
-# Stage 2: builder — compile TypeScript
-# Stage 3: runtime — Alpine minimal image, non-root user
+# Take Off API — multi-stage Docker build (Spring Boot / JVM)
+# Stage 1: build — Gradle wrapper builds the fat JAR
+# Stage 2: runtime — Eclipse Temurin JRE, non-root user
 # ============================================================
 
-# ---------- Stage 1: deps ----------
-FROM node:20-alpine AS deps
+# ---------- Stage 1: build ----------
+FROM eclipse-temurin:21-jdk AS build
 WORKDIR /app
 
-# Install pnpm
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# Copy Gradle wrapper first (cached unless wrapper changes)
+COPY gradlew gradlew.bat ./
+COPY gradle ./gradle
+RUN chmod +x gradlew
 
-COPY package.json pnpm-lock.yaml* ./
-RUN pnpm install --frozen-lockfile --prod=false
+# Copy build scripts before source (cache layer)
+COPY build.gradle.kts settings.gradle.kts ./
 
-# ---------- Stage 2: builder ----------
-FROM node:20-alpine AS builder
-WORKDIR /app
+# Download dependencies only (cache-friendly)
+RUN ./gradlew dependencies --no-daemon -q
 
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# Copy source and build
+COPY src ./src
+RUN ./gradlew bootJar --no-daemon -q
 
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
-
-RUN pnpm build
-
-# ---------- Stage 3: runtime ----------
-FROM node:20-alpine AS runtime
+# ---------- Stage 2: runtime ----------
+FROM eclipse-temurin:21-jre AS runtime
 WORKDIR /app
 
 # Security: run as non-root
-RUN addgroup -S takeoff && adduser -S takeoff -G takeoff
+RUN groupadd -r takeoff && useradd -r -g takeoff takeoff
 
-# Only production dependencies
-COPY package.json pnpm-lock.yaml* ./
-RUN corepack enable && corepack prepare pnpm@latest --activate \
-    && pnpm install --frozen-lockfile --prod \
-    && pnpm store prune
+COPY --from=build /app/build/libs/*.jar app.jar
 
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/drizzle ./drizzle
+# RSA keys are mounted via Railway secret files or volume
+RUN mkdir -p /app/keys && chown -R takeoff:takeoff /app
 
-# Switch to non-root user
 USER takeoff
 
-EXPOSE 3001
+EXPOSE 8080
 
-# Healthcheck — Caddy / deploy script polls this
-HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 \
-  CMD wget -qO- http://localhost:3001/health || exit 1
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
+  CMD wget -qO- http://localhost:8080/actuator/health || exit 1
 
-CMD ["node", "dist/main"]
+ENTRYPOINT ["java", "-jar", "app.jar"]
