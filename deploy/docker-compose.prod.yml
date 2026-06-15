@@ -1,0 +1,73 @@
+# Take Off API — production stack for an OVH (or any) VPS.
+# Caddy terminates TLS (auto Let's Encrypt) and reverse-proxies to the API.
+# Postgres is NOT published to the host — only reachable on the internal network.
+#
+# Usage on the host:
+#   cp deploy/.env.example deploy/.env   # then fill in real secrets
+#   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d --build
+#
+# Requires: deploy/.env, and ./keys/{private,public}.pem present on the host.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      retries: 5
+    networks:
+      - internal
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      # PostgreSQL driver does NOT accept credentials embedded in the URL — keep them separate.
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/${POSTGRES_DB}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      JWT_PRIVATE_KEY_PATH: /app/keys/private.pem
+      JWT_PUBLIC_KEY_PATH: /app/keys/public.pem
+      FRONTEND_URL: ${FRONTEND_URL}
+    volumes:
+      - ../keys:/app/keys:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - internal
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      API_DOMAIN: ${API_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    networks:
+      - internal
+
+volumes:
+  pg_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  internal:
+    driver: bridge
