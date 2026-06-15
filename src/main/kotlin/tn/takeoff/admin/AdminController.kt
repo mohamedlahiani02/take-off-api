@@ -8,7 +8,7 @@ import org.springframework.security.access.prepost.PreAuthorize
 import org.springframework.web.bind.annotation.*
 import tn.takeoff.coaching.CoachingInquiry
 import tn.takeoff.coaching.CoachingRepository
-import tn.takeoff.orders.OrderDto
+import tn.takeoff.orders.dto.OrderDto
 import tn.takeoff.orders.OrderRepository
 import tn.takeoff.orders.OrderService
 import tn.takeoff.orders.dto.UpdateOrderStatusRequest
