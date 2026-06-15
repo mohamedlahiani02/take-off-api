@@ -2,8 +2,10 @@ spring:
   application:
     name: take-off-api
   datasource:
-    # SPRING_DATASOURCE_URL takes priority (Railway: set this to jdbc:postgresql://... from DATABASE_URL)
-    url: ${SPRING_DATASOURCE_URL:${DATABASE_URL:jdbc:postgresql://localhost:5432/takeoff}}
+    # Railway: set SPRING_DATASOURCE_URL=jdbc:${{Postgres.DATABASE_URL}}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/takeoff}
+    username: ${SPRING_DATASOURCE_USERNAME:takeoff}
+    password: ${SPRING_DATASOURCE_PASSWORD:takeoff}
     driver-class-name: org.postgresql.Driver
   jpa:
     hibernate:
