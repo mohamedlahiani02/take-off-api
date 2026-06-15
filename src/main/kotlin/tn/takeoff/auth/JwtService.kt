@@ -24,7 +24,9 @@ class JwtService(private val props: JwtProperties) {
         val kf = KeyFactory.getInstance("RSA")
 
         val privateKey = run {
-            val pem = Files.readString(Paths.get(props.privateKeyPath))
+            val raw = System.getenv("JWT_PRIVATE_KEY")?.trim()
+                ?: Files.readString(Paths.get(props.privateKeyPath))
+            val pem = raw
                 .replace("-----BEGIN PRIVATE KEY-----", "")
                 .replace("-----END PRIVATE KEY-----", "")
                 .replace("\\s".toRegex(), "")
@@ -33,7 +35,9 @@ class JwtService(private val props: JwtProperties) {
         }
 
         val publicKey = run {
-            val pem = Files.readString(Paths.get(props.publicKeyPath))
+            val raw = System.getenv("JWT_PUBLIC_KEY")?.trim()
+                ?: Files.readString(Paths.get(props.publicKeyPath))
+            val pem = raw
                 .replace("-----BEGIN PUBLIC KEY-----", "")
                 .replace("-----END PUBLIC KEY-----", "")
                 .replace("\\s".toRegex(), "")
