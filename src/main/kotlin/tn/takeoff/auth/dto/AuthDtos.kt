@@ -2,6 +2,7 @@ package tn.takeoff.auth.dto
 
 import jakarta.validation.constraints.Email
 import jakarta.validation.constraints.NotBlank
+import jakarta.validation.constraints.Pattern
 import jakarta.validation.constraints.Size
 import tn.takeoff.users.User
 import tn.takeoff.users.UserRole
@@ -13,12 +14,15 @@ data class RegisterRequest(
     @field:NotBlank @field:Email val email: String,
     @field:NotBlank @field:Size(min = 8) val password: String,
     @field:NotBlank val name: String,
-    val phone: String? = null,
+    @field:NotBlank @field:Pattern(
+        regexp = "^\\+216[0-9]{8}$",
+        message = "Phone must be a valid +216 number (8 digits)",
+    ) val phone: String,
     val tracks: List<String> = emptyList(),
 )
 
 data class LoginRequest(
-    @field:NotBlank @field:Email val email: String,
+    @field:NotBlank val identifier: String,
     @field:NotBlank val password: String,
 )
 
