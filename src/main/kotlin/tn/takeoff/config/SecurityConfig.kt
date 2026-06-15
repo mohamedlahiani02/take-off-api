@@ -34,7 +34,7 @@ class SecurityConfig(
                     .requestMatchers(HttpMethod.POST, "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/refresh").permitAll()
                     .requestMatchers(HttpMethod.GET, "/api/v1/products/**", "/api/v1/courts/**", "/api/v1/leaderboard").permitAll()
                     .requestMatchers(HttpMethod.POST, "/api/v1/coaching/inquiry").permitAll()
-                    .requestMatchers("/api/docs/**", "/actuator/health").permitAll()
+                    .requestMatchers("/api/docs", "/api/docs/**", "/api/docs/json", "/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs", "/v3/api-docs/**", "/actuator/health").permitAll()
                     .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                     .anyRequest().authenticated()
             }
