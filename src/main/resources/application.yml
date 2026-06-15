@@ -30,10 +30,9 @@ management:
         include: health,info
 
 springdoc:
-  api-docs:
-    path: /api/docs/json
   swagger-ui:
-    path: /api/docs
+    path: /swagger-ui.html
+    disable-swagger-default-url: true
 
 takeoff:
   jwt:
