@@ -1,45 +1,46 @@
-# Dependencies
-node_modules/
+HELP.md
+.gradle
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
 
-# Build output
-dist/
-.tsbuildinfo
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+bin/
+!**/src/main/**/bin/
+!**/src/test/**/bin/
 
-# Environment files — NEVER commit plaintext .env
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+out/
+!**/src/main/**/out/
+!**/src/test/**/out/
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+### VS Code ###
+.vscode/
+
+### Kotlin ###
+.kotlin
+
+### Secrets ###
+keys/
+*.pem
 .env
 .env.local
-.env.*.local
-# .env.enc IS committed (SOPS-encrypted)
-
-# Logs
-*.log
-logs/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Test coverage
-coverage/
-.nyc_output/
-
-# Drizzle
-drizzle/meta/
-
-# Docker
-.docker/
-
-# Keys — NEVER commit private keys
-*.pem
-*.key
-jwt.private.pem
-jwt.public.pem
-
-# Secrets
-secrets/
