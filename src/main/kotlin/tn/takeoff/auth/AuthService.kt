@@ -22,14 +22,19 @@ class AuthService(
 
     @Transactional
     fun register(dto: RegisterRequest): AuthResponse {
-        if (userRepo.existsByEmail(dto.email)) {
+        val email = dto.email.trim().lowercase()
+        val phone = normalizePhone(dto.phone)
+        if (userRepo.existsByEmail(email)) {
             throw ConflictException("takeoff.auth.email_taken", "Email already in use")
         }
+        if (userRepo.existsByPhone(phone)) {
+            throw ConflictException("takeoff.auth.phone_taken", "Phone number already in use")
+        }
         val user = User(
-            email = dto.email,
+            email = email,
             passwordHash = passwordEncoder.encode(dto.password),
             name = dto.name,
-            phone = dto.phone,
+            phone = phone,
             tracks = dto.tracks.toTypedArray(),
         )
         userRepo.save(user)
@@ -38,12 +43,27 @@ class AuthService(
 
     @Transactional
     fun login(dto: LoginRequest): AuthResponse {
-        val user = userRepo.findByEmail(dto.email)
-            .orElseThrow { UnauthorizedException("takeoff.auth.invalid_credentials", "Invalid email or password") }
+        val raw = dto.identifier.trim()
+        val user = (if (raw.contains("@")) userRepo.findByEmail(raw.lowercase())
+                    else userRepo.findByPhone(normalizePhone(raw)))
+            .orElseThrow { UnauthorizedException("takeoff.auth.invalid_credentials", "Invalid credentials") }
         if (!passwordEncoder.matches(dto.password, user.passwordHash)) {
-            throw UnauthorizedException("takeoff.auth.invalid_credentials", "Invalid email or password")
+            throw UnauthorizedException("takeoff.auth.invalid_credentials", "Invalid credentials")
         }
         return issueAuth(user)
+    }
+
+    /**
+     * Normalize a Tunisian phone to canonical +216XXXXXXXX form.
+     * Accepts inputs with spaces, a leading 00216/216, or bare 8 digits.
+     * Non-conforming input is returned trimmed (it simply won't match any stored phone).
+     */
+    private fun normalizePhone(input: String): String {
+        var digits = input.trim().replace(Regex("[\\s-]"), "")
+        digits = digits.removePrefix("+")
+        if (digits.startsWith("00216")) digits = digits.removePrefix("00216")
+        else if (digits.startsWith("216")) digits = digits.removePrefix("216")
+        return if (digits.length == 8 && digits.all { it.isDigit() }) "+216$digits" else input.trim()
     }
 
     @Transactional

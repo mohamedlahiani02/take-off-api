@@ -24,7 +24,8 @@ class User(
     @Column(nullable = false)
     var name: String,
 
-    var phone: String? = null,
+    @Column(unique = true, nullable = false)
+    var phone: String,
 
     @JdbcTypeCode(SqlTypes.ARRAY)
     @Column(columnDefinition = "text[]")
