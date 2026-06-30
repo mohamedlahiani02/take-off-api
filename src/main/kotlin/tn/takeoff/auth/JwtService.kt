@@ -3,6 +3,7 @@ package tn.takeoff.auth
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
 import org.springframework.stereotype.Service
+import tn.takeoff.admin.auth.AdminRole
 import tn.takeoff.config.JwtProperties
 import tn.takeoff.users.UserRole
 import java.nio.file.Files
@@ -72,6 +73,31 @@ class JwtService(private val props: JwtProperties) {
             email = decoded.getClaim("email").asString(),
             name = decoded.getClaim("name").asString(),
             role = UserRole.valueOf(decoded.getClaim("role").asString()),
+        )
+    }
+
+    data class AdminClaims(val adminId: UUID, val email: String, val name: String, val role: AdminRole)
+
+    fun issueAdminAccessToken(claims: AdminClaims): String {
+        val now = Instant.now()
+        return JWT.create()
+            .withIssuer("takeoff-admin")
+            .withSubject(claims.adminId.toString())
+            .withClaim("email", claims.email)
+            .withClaim("name", claims.name)
+            .withClaim("role", claims.role.name)
+            .withIssuedAt(Date.from(now))
+            .withExpiresAt(Date.from(now.plusSeconds(props.accessTtlSeconds)))
+            .sign(algorithm)
+    }
+
+    fun verifyAdmin(token: String): AdminClaims {
+        val decoded = JWT.require(algorithm).withIssuer("takeoff-admin").build().verify(token)
+        return AdminClaims(
+            adminId = UUID.fromString(decoded.subject),
+            email = decoded.getClaim("email").asString(),
+            name = decoded.getClaim("name").asString(),
+            role = AdminRole.valueOf(decoded.getClaim("role").asString()),
         )
     }
 }
