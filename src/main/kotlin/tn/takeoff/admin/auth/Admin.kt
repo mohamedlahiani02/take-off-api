@@ -1,6 +1,8 @@
 package tn.takeoff.admin.auth
 
 import jakarta.persistence.*
+import org.hibernate.annotations.JdbcTypeCode
+import org.hibernate.type.SqlTypes
 import java.time.Instant
 import java.util.UUID
 
@@ -20,6 +22,7 @@ class Admin(
     var name: String,
 
     @Enumerated(EnumType.STRING)
+    @JdbcTypeCode(SqlTypes.NAMED_ENUM)
     @Column(columnDefinition = "admin_role", nullable = false)
     var role: AdminRole = AdminRole.RECEPTION,
 
