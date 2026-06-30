@@ -1,6 +1,10 @@
 spring:
   application:
     name: take-off-api
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 12MB
   datasource:
     # Railway: set SPRING_DATASOURCE_URL=jdbc:${{Postgres.DATABASE_URL}}
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/takeoff}
