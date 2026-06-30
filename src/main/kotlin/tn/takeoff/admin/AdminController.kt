@@ -16,7 +16,7 @@ import java.util.UUID
 
 @RestController
 @RequestMapping("/api/v1/admin")
-@PreAuthorize("hasRole('ADMIN')")
+@PreAuthorize("hasAnyRole('SUPER_ADMIN','MANAGER','RECEPTION','COACH')")
 class AdminController(
     private val orderRepo: OrderGateway,
     private val orderService: OrderService,
