@@ -38,13 +38,7 @@ class User(
     @Column(name = "wallet_dt", precision = 10, scale = 3)
     var walletDt: BigDecimal = BigDecimal.ZERO,
 
-    @Column(name = "padel_level")
-    var padelLevel: Int = 1,
-
-    @Column(name = "padel_level_self_declared")
-    var padelLevelSelfDeclared: Int? = null,
-
-    var points: Int = 100,
+    var points: Int = 0,
 
     @Column(name = "created_at", nullable = false, updatable = false)
     val createdAt: Instant = Instant.now(),

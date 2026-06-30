@@ -6,7 +6,7 @@ import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Query
 import java.util.UUID
 
-interface ProductRepository : JpaRepository<Product, UUID> {
+interface ProductRepository : JpaRepository<Product, UUID>, ProductGateway {
 
     @Query("""
         SELECT p FROM Product p
@@ -14,7 +14,7 @@ interface ProductRepository : JpaRepository<Product, UUID> {
           AND (:category IS NULL OR p.category = :category)
           AND (:search IS NULL OR LOWER(p.name) LIKE LOWER(CONCAT('%', :search, '%')))
     """)
-    fun search(
+    override fun search(
         category: ProductCategory?,
         search: String?,
         pageable: Pageable,

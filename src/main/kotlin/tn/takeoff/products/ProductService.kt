@@ -8,7 +8,7 @@ import tn.takeoff.common.errors.NotFoundException
 import java.util.UUID
 
 @Service
-class ProductService(private val repo: ProductRepository) {
+class ProductService(private val repo: ProductGateway) {
 
     fun list(category: String?, search: String?, page: Int, size: Int): Page<Product> {
         val cat = category?.let { runCatching { ProductCategory.valueOf(it.uppercase()) }.getOrNull() }

@@ -6,10 +6,10 @@ import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Sort
 import org.springframework.security.access.prepost.PreAuthorize
 import org.springframework.web.bind.annotation.*
+import tn.takeoff.coaching.CoachingGateway
 import tn.takeoff.coaching.CoachingInquiry
-import tn.takeoff.coaching.CoachingRepository
+import tn.takeoff.orders.OrderGateway
 import tn.takeoff.orders.dto.OrderDto
-import tn.takeoff.orders.OrderRepository
 import tn.takeoff.orders.OrderService
 import tn.takeoff.orders.dto.UpdateOrderStatusRequest
 import java.util.UUID
@@ -18,9 +18,9 @@ import java.util.UUID
 @RequestMapping("/api/v1/admin")
 @PreAuthorize("hasRole('ADMIN')")
 class AdminController(
-    private val orderRepo: OrderRepository,
+    private val orderRepo: OrderGateway,
     private val orderService: OrderService,
-    private val coachingRepo: CoachingRepository,
+    private val coachingRepo: CoachingGateway,
 ) {
 
     @GetMapping("/orders")
