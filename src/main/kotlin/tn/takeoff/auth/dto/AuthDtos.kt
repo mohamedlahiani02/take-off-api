@@ -22,8 +22,19 @@ data class RegisterRequest(
 )
 
 data class LoginRequest(
-    @field:NotBlank val identifier: String,
+    @field:NotBlank
+    @field:Pattern(regexp = "^\\+?[0-9\\s-]{8,15}$", message = "Invalid phone number")
+    val phone: String,
     @field:NotBlank val password: String,
+)
+
+data class ForgotPasswordRequest(
+    @field:NotBlank @field:Email val email: String,
+)
+
+data class ResetPasswordRequest(
+    @field:NotBlank val token: String,
+    @field:NotBlank @field:Size(min = 8) val newPassword: String,
 )
 
 data class RefreshRequest(
@@ -48,7 +59,6 @@ data class UserDto(
     val tracks: List<String>,
     val role: UserRole,
     val walletDt: BigDecimal,
-    val padelLevel: Int,
     val points: Int,
     val createdAt: Instant,
 ) {
@@ -61,7 +71,6 @@ data class UserDto(
             tracks = u.tracks.toList(),
             role = u.role,
             walletDt = u.walletDt,
-            padelLevel = u.padelLevel,
             points = u.points,
             createdAt = u.createdAt,
         )

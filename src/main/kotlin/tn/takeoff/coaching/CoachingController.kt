@@ -18,7 +18,7 @@ data class CoachingInquiryRequest(
 
 @RestController
 @RequestMapping("/api/v1/coaching")
-class CoachingController(private val repo: CoachingRepository) {
+class CoachingController(private val repo: CoachingGateway) {
 
     @PostMapping("/inquiry")
     @ResponseStatus(HttpStatus.CREATED)

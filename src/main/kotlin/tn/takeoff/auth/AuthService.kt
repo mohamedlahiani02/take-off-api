@@ -7,15 +7,16 @@ import tn.takeoff.auth.dto.*
 import tn.takeoff.common.errors.ConflictException
 import tn.takeoff.common.errors.UnauthorizedException
 import tn.takeoff.users.User
-import tn.takeoff.users.UserRepository
+import tn.takeoff.users.UserGateway
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
 
 @Service
 class AuthService(
-    private val userRepo: UserRepository,
-    private val refreshTokenRepo: RefreshTokenRepository,
+    private val userRepo: UserGateway,
+    private val refreshTokenRepo: RefreshTokenGateway,
+    private val passwordResetTokenRepo: PasswordResetTokenGateway,
     private val jwtService: JwtService,
     private val passwordEncoder: PasswordEncoder,
 ) {
@@ -43,9 +44,7 @@ class AuthService(
 
     @Transactional
     fun login(dto: LoginRequest): AuthResponse {
-        val raw = dto.identifier.trim()
-        val user = (if (raw.contains("@")) userRepo.findByEmail(raw.lowercase())
-                    else userRepo.findByPhone(normalizePhone(raw)))
+        val user = userRepo.findByPhone(normalizePhone(dto.phone))
             .orElseThrow { UnauthorizedException("takeoff.auth.invalid_credentials", "Invalid credentials") }
         if (!passwordEncoder.matches(dto.password, user.passwordHash)) {
             throw UnauthorizedException("takeoff.auth.invalid_credentials", "Invalid credentials")
@@ -106,6 +105,31 @@ class AuthService(
         dto.tracks?.let { user.tracks = it.toTypedArray() }
         user.updatedAt = Instant.now()
         return UserDto.from(userRepo.save(user))
+    }
+
+    @Transactional
+    fun forgotPassword(dto: ForgotPasswordRequest) {
+        val user = userRepo.findByEmail(dto.email.trim().lowercase()).orElse(null)
+            ?: return  // silent — don't reveal whether the email exists
+        passwordResetTokenRepo.deleteAllByUserId(user.id)
+        val raw = UUID.randomUUID().toString()
+        passwordResetTokenRepo.save(
+            PasswordResetToken(user = user, tokenHash = sha256(raw), expiresAt = Instant.now().plusSeconds(3600))
+        )
+        // TODO: send email with reset link — wire up SMTP provider when purchased
+    }
+
+    @Transactional
+    fun resetPassword(dto: ResetPasswordRequest) {
+        val stored = passwordResetTokenRepo.findByTokenHash(sha256(dto.token))
+            .orElseThrow { UnauthorizedException("takeoff.auth.invalid_reset", "Token invalid or expired") }
+        if (stored.used || stored.expiresAt.isBefore(Instant.now()))
+            throw UnauthorizedException("takeoff.auth.invalid_reset", "Token invalid or expired")
+        stored.user.passwordHash = passwordEncoder.encode(dto.newPassword)
+        stored.user.updatedAt = Instant.now()
+        userRepo.save(stored.user)
+        stored.used = true
+        passwordResetTokenRepo.save(stored)
     }
 
     private fun issueAuth(user: User): AuthResponse {
