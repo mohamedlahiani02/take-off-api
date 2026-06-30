@@ -24,29 +24,32 @@ class JwtService(private val props: JwtProperties) {
     private val algorithm: Algorithm by lazy {
         val kf = KeyFactory.getInstance("RSA")
 
-        val privateKey = run {
-            val raw = System.getenv("JWT_PRIVATE_KEY")?.trim()
-                ?: Files.readString(Paths.get(props.privateKeyPath))
-            val pem = raw
-                .replace("-----BEGIN PRIVATE KEY-----", "")
-                .replace("-----END PRIVATE KEY-----", "")
-                .replace("\\s".toRegex(), "")
-            val bytes = Base64.getDecoder().decode(pem)
-            kf.generatePrivate(PKCS8EncodedKeySpec(bytes)) as RSAPrivateKey
-        }
+        val privateRaw = System.getenv("JWT_PRIVATE_KEY")
+            ?: Files.readString(Paths.get(props.privateKeyPath))
+        val privateKey = kf.generatePrivate(PKCS8EncodedKeySpec(decodePem(privateRaw))) as RSAPrivateKey
 
-        val publicKey = run {
-            val raw = System.getenv("JWT_PUBLIC_KEY")?.trim()
-                ?: Files.readString(Paths.get(props.publicKeyPath))
-            val pem = raw
-                .replace("-----BEGIN PUBLIC KEY-----", "")
-                .replace("-----END PUBLIC KEY-----", "")
-                .replace("\\s".toRegex(), "")
-            val bytes = Base64.getDecoder().decode(pem)
-            kf.generatePublic(X509EncodedKeySpec(bytes)) as RSAPublicKey
-        }
+        val publicRaw = System.getenv("JWT_PUBLIC_KEY")
+            ?: Files.readString(Paths.get(props.publicKeyPath))
+        val publicKey = kf.generatePublic(X509EncodedKeySpec(decodePem(publicRaw))) as RSAPublicKey
 
         Algorithm.RSA256(publicKey, privateKey)
+    }
+
+    /**
+     * Decode a PEM-encoded key into DER bytes, tolerant of how env vars mangle PEMs:
+     * literal "\n" sequences, surrounding quotes, any BEGIN/END header variant, and
+     * all real whitespace are stripped before a lenient MIME Base64 decode.
+     */
+    private fun decodePem(raw: String): ByteArray {
+        val cleaned = raw
+            .trim()
+            .removeSurrounding("\"")
+            .replace("\\n", "")
+            .replace("\\r", "")
+            .replace(Regex("-----BEGIN [^-]+-----"), "")
+            .replace(Regex("-----END [^-]+-----"), "")
+            .replace(Regex("\\s"), "")
+        return Base64.getMimeDecoder().decode(cleaned)
     }
 
     data class Claims(val userId: UUID, val email: String, val name: String, val role: UserRole)
