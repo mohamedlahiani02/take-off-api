@@ -1,8 +1,5 @@
 package tn.takeoff.coaches
 
-import java.util.Optional
-import java.util.UUID
-
 interface CoachGateway {
     fun findByActivityAndActiveOrderByDisplayOrder(activity: CoachActivity, active: Boolean): List<Coach>
     fun findByActivityAndActiveAndShowOnPadelPreviewOrderByDisplayOrder(
@@ -10,9 +7,4 @@ interface CoachGateway {
         active: Boolean,
         showOnPadelPreview: Boolean,
     ): List<Coach>
-    fun findById(id: UUID): Optional<Coach>
-    fun save(coach: Coach): Coach
-    fun delete(coach: Coach)
-    fun findAllById(ids: Iterable<UUID>): List<Coach>
-    fun findAll(): List<Coach>
 }

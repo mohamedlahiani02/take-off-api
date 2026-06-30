@@ -12,7 +12,7 @@ import java.util.UUID
 
 @Service
 class CoachService(
-    private val repo: CoachGateway,
+    private val repo: CoachRepository,
     private val auditService: AuditService,
 ) {
 

@@ -10,5 +10,4 @@ interface CoachRepository : JpaRepository<Coach, UUID>, CoachGateway {
         active: Boolean,
         showOnPadelPreview: Boolean,
     ): List<Coach>
-    // findAll() and findAllById() are inherited from JpaRepository
 }
