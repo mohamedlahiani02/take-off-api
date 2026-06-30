@@ -22,9 +22,7 @@ data class RegisterRequest(
 )
 
 data class LoginRequest(
-    @field:NotBlank
-    @field:Pattern(regexp = "^\\+?[0-9\\s-]{8,15}$", message = "Invalid phone number")
-    val phone: String,
+    @field:NotBlank val phone: String,
     @field:NotBlank val password: String,
 )
 
