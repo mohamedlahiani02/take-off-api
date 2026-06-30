@@ -37,4 +37,14 @@ class AuthController(private val authService: AuthService) {
         @AuthenticationPrincipal claims: JwtService.Claims,
         @RequestBody dto: UpdateMeRequest,
     ): UserDto = authService.updateMe(claims.userId, dto)
+
+    @PostMapping("/forgot-password")
+    @ResponseStatus(HttpStatus.OK)
+    fun forgotPassword(@Valid @RequestBody dto: ForgotPasswordRequest) =
+        authService.forgotPassword(dto)
+
+    @PostMapping("/reset-password")
+    @ResponseStatus(HttpStatus.OK)
+    fun resetPassword(@Valid @RequestBody dto: ResetPasswordRequest) =
+        authService.resetPassword(dto)
 }

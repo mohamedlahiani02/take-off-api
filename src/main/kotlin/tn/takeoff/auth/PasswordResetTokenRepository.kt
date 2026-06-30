@@ -6,10 +6,10 @@ import org.springframework.data.jpa.repository.Query
 import java.util.Optional
 import java.util.UUID
 
-interface RefreshTokenRepository : JpaRepository<RefreshToken, UUID>, RefreshTokenGateway {
-    override fun findByTokenHash(hash: String): Optional<RefreshToken>
+interface PasswordResetTokenRepository : JpaRepository<PasswordResetToken, UUID>, PasswordResetTokenGateway {
+    override fun findByTokenHash(hash: String): Optional<PasswordResetToken>
 
     @Modifying
-    @Query("DELETE FROM RefreshToken r WHERE r.user.id = :userId")
+    @Query("DELETE FROM PasswordResetToken t WHERE t.user.id = :userId")
     override fun deleteAllByUserId(userId: UUID)
 }
