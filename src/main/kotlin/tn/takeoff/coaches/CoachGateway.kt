@@ -13,7 +13,7 @@ interface CoachGateway {
     fun findById(id: UUID): Optional<Coach>
     fun save(coach: Coach): Coach
     fun delete(coach: Coach)
-    fun saveAll(coaches: List<Coach>): List<Coach>
+    fun saveAll(coaches: Iterable<Coach>): List<Coach>
     fun findAllById(ids: Iterable<UUID>): List<Coach>
     fun findAll(): List<Coach>
 }
