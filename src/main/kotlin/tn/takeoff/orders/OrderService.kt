@@ -8,14 +8,14 @@ import org.springframework.transaction.annotation.Transactional
 import tn.takeoff.common.errors.BadRequestException
 import tn.takeoff.common.errors.NotFoundException
 import tn.takeoff.orders.dto.*
-import tn.takeoff.users.UserRepository
+import tn.takeoff.users.UserGateway
 import java.time.Instant
 import java.util.UUID
 
 @Service
 class OrderService(
-    private val orderRepo: OrderRepository,
-    private val userRepo: UserRepository,
+    private val orderRepo: OrderGateway,
+    private val userRepo: UserGateway,
 ) {
 
     fun myOrders(userId: UUID, page: Int, size: Int): Page<OrderDto> {
