@@ -9,6 +9,8 @@ import java.util.UUID
 
 enum class UserRole { USER, ADMIN }
 
+enum class AccountStatus { ACTIVE, GHOST, BLOCKED, DELETED }
+
 @Entity
 @Table(name = "users")
 class User(
@@ -16,7 +18,7 @@ class User(
     val id: UUID = UUID.randomUUID(),
 
     @Column(unique = true, nullable = false)
-    val email: String,
+    var email: String,
 
     @Column(name = "password_hash", nullable = false)
     var passwordHash: String,
@@ -34,6 +36,13 @@ class User(
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     var role: UserRole = UserRole.USER,
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "account_status", nullable = false)
+    var accountStatus: AccountStatus = AccountStatus.ACTIVE,
+
+    @Column(name = "created_by_admin_id")
+    var createdByAdminId: UUID? = null,
 
     @Column(name = "wallet_dt", precision = 10, scale = 3)
     var walletDt: BigDecimal = BigDecimal.ZERO,

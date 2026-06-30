@@ -46,6 +46,13 @@ class AuthService(
     fun login(dto: LoginRequest): AuthResponse {
         val user = userRepo.findByPhone(normalizePhone(dto.phone))
             .orElseThrow { UnauthorizedException("takeoff.auth.invalid_credentials", "Invalid credentials") }
+        if (user.accountStatus == tn.takeoff.users.AccountStatus.BLOCKED) {
+            throw UnauthorizedException("takeoff.auth.account_blocked", "Account is blocked")
+        }
+        // GHOST (no real password yet) and DELETED accounts cannot authenticate.
+        if (user.accountStatus != tn.takeoff.users.AccountStatus.ACTIVE) {
+            throw UnauthorizedException("takeoff.auth.invalid_credentials", "Invalid credentials")
+        }
         if (!passwordEncoder.matches(dto.password, user.passwordHash)) {
             throw UnauthorizedException("takeoff.auth.invalid_credentials", "Invalid credentials")
         }
