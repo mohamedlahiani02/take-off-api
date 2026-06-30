@@ -1,0 +1,13 @@
+package tn.takeoff.orders
+
+import org.springframework.data.domain.Page
+import org.springframework.data.domain.Pageable
+import java.util.Optional
+import java.util.UUID
+
+interface OrderGateway {
+    fun findById(id: UUID): Optional<Order>
+    fun findAllByUser_Id(userId: UUID, pageable: Pageable): Page<Order>
+    fun findAllByOrderByCreatedAtDesc(pageable: Pageable): Page<Order>
+    fun save(order: Order): Order
+}
