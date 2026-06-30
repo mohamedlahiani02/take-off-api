@@ -83,7 +83,7 @@ class CoachService(
         val updated = ids.mapIndexedNotNull { index, id ->
             coaches[id]?.also { it.displayOrder = index + 1; it.updatedAt = Instant.now() }
         }
-        repo.saveAll(updated)
+        updated.forEach { repo.save(it) }
         auditService.log(adminId, "coach.reorder", "coach", null)
     }
 
