@@ -14,6 +14,7 @@ import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.security.web.SecurityFilterChain
 import org.springframework.security.web.authentication.HttpStatusEntryPoint
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter
+import org.springframework.web.cors.CorsConfigurationSource
 import tn.takeoff.admin.auth.AdminJwtAuthFilter
 import tn.takeoff.auth.JwtAuthFilter
 import tn.takeoff.auth.JwtService
@@ -21,7 +22,10 @@ import tn.takeoff.auth.JwtService
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
-class SecurityConfig(private val jwtService: JwtService) {
+class SecurityConfig(
+    private val jwtService: JwtService,
+    private val corsConfigurationSource: CorsConfigurationSource,
+) {
 
     @Bean
     fun adminJwtAuthFilter(): AdminJwtAuthFilter = AdminJwtAuthFilter(jwtService)
@@ -34,6 +38,7 @@ class SecurityConfig(private val jwtService: JwtService) {
     fun adminFilterChain(http: HttpSecurity): SecurityFilterChain {
         http
             .securityMatcher("/api/v1/admin/**")
+            .cors { it.configurationSource(corsConfigurationSource) }
             .csrf { it.disable() }
             .sessionManagement { it.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
             .authorizeHttpRequests { auth ->
@@ -52,6 +57,7 @@ class SecurityConfig(private val jwtService: JwtService) {
     @Order(2)
     fun memberFilterChain(http: HttpSecurity): SecurityFilterChain {
         http
+            .cors { it.configurationSource(corsConfigurationSource) }
             .csrf { it.disable() }
             .sessionManagement { it.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
             .authorizeHttpRequests { auth ->
