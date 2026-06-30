@@ -36,4 +36,25 @@ class CoachingInquiry(
 
     @Column(name = "created_at", nullable = false, updatable = false)
     val createdAt: Instant = Instant.now(),
+
+    // ── Epic H3 pipeline ──
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    var status: InquiryStatus = InquiryStatus.NEW,
+
+    @Column(name = "assigned_coach_id")
+    var assignedCoachId: UUID? = null,
+
+    @Column(name = "admin_note", columnDefinition = "text")
+    var adminNote: String? = null,
+
+    @Enumerated(EnumType.STRING)
+    @Column
+    var outcome: InquiryOutcome? = null,
+
+    @Column(name = "updated_at", nullable = false)
+    var updatedAt: Instant = Instant.now(),
 )
+
+enum class InquiryStatus { NEW, CONTACTED, SCHEDULED, CLOSED }
+enum class InquiryOutcome { CONVERTED, NO_SHOW, NOT_INTERESTED }

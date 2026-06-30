@@ -83,7 +83,7 @@ class SecurityConfig(private val jwtService: JwtService) {
                         "/api/v1/auth/forgot-password",
                         "/api/v1/auth/reset-password",
                     ).permitAll()
-                    .requestMatchers(HttpMethod.GET, "/api/v1/products/**", "/api/v1/courts/**", "/api/v1/coaches/**").permitAll()
+                    .requestMatchers(HttpMethod.GET, "/api/v1/products/**", "/api/v1/courts/**", "/api/v1/coaches/**", "/api/v1/content/**").permitAll()
                     .requestMatchers(HttpMethod.POST, "/api/v1/coaching/inquiry").permitAll()
                     .requestMatchers(
                         "/error",
