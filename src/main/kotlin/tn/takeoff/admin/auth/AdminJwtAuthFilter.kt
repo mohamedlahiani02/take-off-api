@@ -1,4 +1,4 @@
-package tn.takeoff.auth
+package tn.takeoff.admin.auth
 
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
@@ -7,8 +7,9 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.authority.SimpleGrantedAuthority
 import org.springframework.security.core.context.SecurityContextHolder
 import org.springframework.web.filter.OncePerRequestFilter
+import tn.takeoff.auth.JwtService
 
-class JwtAuthFilter(private val jwtService: JwtService) : OncePerRequestFilter() {
+class AdminJwtAuthFilter(private val jwtService: JwtService) : OncePerRequestFilter() {
 
     override fun doFilterInternal(
         request: HttpServletRequest,
@@ -19,7 +20,7 @@ class JwtAuthFilter(private val jwtService: JwtService) : OncePerRequestFilter()
         if (header != null && header.startsWith("Bearer ")) {
             val token = header.removePrefix("Bearer ")
             runCatching {
-                val claims = jwtService.verify(token)
+                val claims = jwtService.verifyAdmin(token)
                 val auth = UsernamePasswordAuthenticationToken(
                     claims,
                     null,
