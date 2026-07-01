@@ -14,7 +14,7 @@ enum class OrderStatus {
 
 enum class DeliveryMethod { PICKUP, DELIVER }
 
-enum class PaymentMethod { COD, D17, WALLET, CARD }
+enum class PaymentMethod { COD, D17, WALLET, CARD, PAY_AT_CLUB }
 
 @Entity
 @Table(name = "orders")
@@ -52,6 +52,18 @@ class Order(
     @Column(name = "contact", columnDefinition = "jsonb")
     val contact: Map<String, String>,
 
+    @Column(name = "timbre_fiscal_dt", precision = 10, scale = 3, nullable = false)
+    var timbreFiscalDt: BigDecimal = BigDecimal.ZERO,
+
+    @Column(name = "delivery_fee_dt", precision = 10, scale = 3, nullable = false)
+    var deliveryFeeDt: BigDecimal = BigDecimal.ZERO,
+
+    @Column(name = "discount_code")
+    var discountCode: String? = null,
+
+    @Column(name = "discount_amount_dt", precision = 10, scale = 3, nullable = false)
+    var discountAmountDt: BigDecimal = BigDecimal.ZERO,
+
     @Column(name = "created_at", nullable = false, updatable = false)
     val createdAt: Instant = Instant.now(),
 
@@ -73,7 +85,7 @@ class OrderItem(
     val order: Order,
 
     @Column(name = "product_id")
-    val productId: UUID,
+    val productId: UUID? = null,
 
     @Column(name = "product_name", nullable = false)
     val productName: String,
