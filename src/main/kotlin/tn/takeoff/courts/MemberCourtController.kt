@@ -1,7 +1,8 @@
-package tn.takeoff.courts
+﻿package tn.takeoff.courts
 
 import org.springframework.http.HttpStatus
 import org.springframework.security.core.annotation.AuthenticationPrincipal
+import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.bind.annotation.*
 import tn.takeoff.auth.JwtService
 import tn.takeoff.common.errors.BadRequestException
@@ -69,7 +70,7 @@ class MemberCourtController(
             endsAt = dayEnd, startsAt = dayStart,
         )
 
-        val allCourtBlocks = blocks.findAll().filter { it.courtId == id }
+        val allCourtBlocks = blocks.findByCourtId(id)
         // Java DayOfWeek: MON=1..SUN=7 → convert to 0=Sun..6=Sat to match recurringDow
         val dow = localDate.dayOfWeek.value % 7
 
@@ -109,6 +110,7 @@ class MemberCourtController(
 
     @PostMapping("/{id}/bookings")
     @ResponseStatus(HttpStatus.CREATED)
+    @Transactional
     fun book(
         @PathVariable id: UUID,
         @RequestBody req: BookCourtRequest,
@@ -207,3 +209,4 @@ class MemberCourtController(
         return try { jwtService.verify(authHeader.removePrefix("Bearer ").trim()).userId } catch (_: Exception) { null }
     }
 }
+
