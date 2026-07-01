@@ -5,6 +5,7 @@ import org.springframework.data.domain.Page
 import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Sort
 import org.springframework.security.access.prepost.PreAuthorize
+import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.bind.annotation.*
 import tn.takeoff.coaching.CoachingGateway
 import tn.takeoff.coaching.CoachingInquiry
@@ -32,6 +33,7 @@ class AdminController(
 ) {
 
     @GetMapping("/orders")
+    @Transactional(readOnly = true)
     fun orders(
         @RequestParam(defaultValue = "0") page: Int,
         @RequestParam(defaultValue = "50") size: Int,
