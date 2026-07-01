@@ -8,7 +8,10 @@ import org.springframework.transaction.annotation.Transactional
 import tn.takeoff.common.errors.BadRequestException
 import tn.takeoff.common.errors.NotFoundException
 import tn.takeoff.orders.dto.*
+import tn.takeoff.products.ProductVariantRepository
 import tn.takeoff.users.UserGateway
+import tn.takeoff.users.WalletEntryType
+import tn.takeoff.users.WalletService
 import java.time.Instant
 import java.util.UUID
 
@@ -16,6 +19,8 @@ import java.util.UUID
 class OrderService(
     private val orderRepo: OrderGateway,
     private val userRepo: UserGateway,
+    private val variantRepo: ProductVariantRepository,
+    private val walletService: WalletService,
 ) {
 
     fun myOrders(userId: UUID, page: Int, size: Int): Page<OrderDto> {
@@ -34,6 +39,25 @@ class OrderService(
         val user = userId?.let { userRepo.findById(it).orElse(null) }
         val ref = generateRef()
         val total = dto.items.sumOf { it.unitPriceDt.multiply(java.math.BigDecimal(it.qty)) }
+
+        // Stock check and decrement per variant
+        dto.items.forEach { item ->
+            val variants = variantRepo.findByProductIdOrderByDisplayOrder(item.productId)
+            val variant = if (item.size != null)
+                variants.firstOrNull { it.size.equals(item.size, ignoreCase = true) }
+            else
+                variants.firstOrNull()
+
+            if (variant != null) {
+                if (variant.stock < item.qty)
+                    throw BadRequestException(
+                        "takeoff.product.out_of_stock",
+                        "Not enough stock for '${item.productName}' size ${item.size ?: "default"} (available: ${variant.stock})"
+                    )
+                variant.stock -= item.qty
+                variantRepo.save(variant)
+            }
+        }
 
         val order = Order(
             orderRef = ref,
@@ -54,6 +78,50 @@ class OrderService(
                 unitPriceDt = item.unitPriceDt,
             ))
         }
+
+        // Wallet payment: deduct immediately
+        if (dto.paymentMethod == PaymentMethod.WALLET && userId != null) {
+            walletService.apply(
+                userId = userId, delta = total.negate(),
+                type = WalletEntryType.PAYMENT, reason = "order_${ref}",
+                refType = "order", refId = ref,
+            )
+        }
+
+        return OrderDto.from(orderRepo.save(order))
+    }
+
+    @Transactional
+    fun cancelMine(orderId: UUID, userId: UUID): OrderDto {
+        val order = orderRepo.findById(orderId).orElseThrow { NotFoundException("order", orderId) }
+        if (order.user?.id != userId) throw NotFoundException("order", orderId)
+        if (order.status !in listOf(OrderStatus.PENDING, OrderStatus.CONFIRMED))
+            throw BadRequestException("takeoff.order.not_cancellable", "Order cannot be cancelled in status ${order.status}")
+
+        // Refund to wallet if paid via wallet
+        if (order.paymentMethod == PaymentMethod.WALLET && userId != null) {
+            walletService.apply(
+                userId = userId, delta = order.totalDt,
+                type = WalletEntryType.REFUND, reason = "order_cancel_${order.orderRef}",
+                refType = "order", refId = order.orderRef,
+            )
+        }
+
+        // Restore stock
+        order.items.forEach { item ->
+            val variants = variantRepo.findByProductIdOrderByDisplayOrder(item.productId)
+            val variant = if (item.size != null)
+                variants.firstOrNull { it.size.equals(item.size, ignoreCase = true) }
+            else
+                variants.firstOrNull()
+            if (variant != null) {
+                variant.stock += item.qty
+                variantRepo.save(variant)
+            }
+        }
+
+        order.status = OrderStatus.CANCELLED
+        order.updatedAt = Instant.now()
         return OrderDto.from(orderRepo.save(order))
     }
 
