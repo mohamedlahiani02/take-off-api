@@ -27,8 +27,15 @@ class WalletService(
         refType: String? = null,
         refId: String? = null,
     ): BigDecimal {
-        val u = users.findById(userId).orElseThrow { NotFoundException("user", userId) }
+        // Pessimistic lock: prevents concurrent balance reads from both seeing sufficient funds
+        val u = users.findByIdForUpdate(userId).orElseThrow { NotFoundException("user", userId) }
         val newBalance = u.walletDt.add(delta)
+        if (delta < BigDecimal.ZERO && newBalance < BigDecimal.ZERO) {
+            throw tn.takeoff.common.errors.BadRequestException(
+                "takeoff.wallet.insufficient_funds",
+                "Insufficient wallet balance (available: ${u.walletDt} DT)"
+            )
+        }
         u.walletDt = newBalance
         u.updatedAt = Instant.now()
         users.save(u)

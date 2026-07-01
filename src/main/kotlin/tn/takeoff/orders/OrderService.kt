@@ -22,6 +22,10 @@ class OrderService(
     private val variantRepo: ProductVariantRepository,
     private val walletService: WalletService,
 ) {
+    companion object {
+        private val TIMBRE_FISCAL = java.math.BigDecimal("1.000")
+        private val TIMBRE_THRESHOLD = java.math.BigDecimal("10.000")
+    }
 
     fun myOrders(userId: UUID, page: Int, size: Int): Page<OrderDto> {
         val pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"))
@@ -38,11 +42,19 @@ class OrderService(
     fun place(userId: UUID?, dto: PlaceOrderRequest): OrderDto {
         val user = userId?.let { userRepo.findById(it).orElse(null) }
         val ref = generateRef()
-        val total = dto.items.sumOf { it.unitPriceDt.multiply(java.math.BigDecimal(it.qty)) }
+        val subtotal = dto.items.sumOf { it.unitPriceDt.multiply(java.math.BigDecimal(it.qty)) }
 
-        // Stock check and decrement per variant
+        // Timbre fiscal: 1 DT for orders with physical products >= 10 DT
+        val hasPhysical = dto.items.any { it.productId != null }
+        val timbreFiscal = if (hasPhysical && subtotal >= TIMBRE_THRESHOLD) TIMBRE_FISCAL else java.math.BigDecimal.ZERO
+
+        val deliveryFee = dto.deliveryFeeDt.coerceAtLeast(java.math.BigDecimal.ZERO)
+        val total = subtotal.add(timbreFiscal).add(deliveryFee)
+
+        // Stock check and decrement per variant (pessimistic locked)
         dto.items.forEach { item ->
-            val variants = variantRepo.findByProductIdOrderByDisplayOrder(item.productId)
+            val pid = item.productId ?: return@forEach
+            val variants = variantRepo.findByProductIdForUpdate(pid)
             val variant = if (item.size != null)
                 variants.firstOrNull { it.size.equals(item.size, ignoreCase = true) }
             else
@@ -66,6 +78,10 @@ class OrderService(
             deliveryAddress = dto.deliveryAddress,
             paymentMethod = dto.paymentMethod,
             totalDt = total,
+            timbreFiscalDt = timbreFiscal,
+            deliveryFeeDt = deliveryFee,
+            discountCode = dto.discountCode,
+            discountAmountDt = java.math.BigDecimal.ZERO,
             contact = dto.contact,
         )
         dto.items.forEach { item ->
@@ -79,7 +95,7 @@ class OrderService(
             ))
         }
 
-        // Wallet payment: deduct immediately
+        // Wallet payment: deduct immediately (pessimistic-locked inside walletService)
         if (dto.paymentMethod == PaymentMethod.WALLET && userId != null) {
             walletService.apply(
                 userId = userId, delta = total.negate(),
@@ -107,9 +123,10 @@ class OrderService(
             )
         }
 
-        // Restore stock
+        // Restore stock (pessimistic locked)
         order.items.forEach { item ->
-            val variants = variantRepo.findByProductIdOrderByDisplayOrder(item.productId)
+            val pid = item.productId ?: return@forEach
+            val variants = variantRepo.findByProductIdForUpdate(pid)
             val variant = if (item.size != null)
                 variants.firstOrNull { it.size.equals(item.size, ignoreCase = true) }
             else

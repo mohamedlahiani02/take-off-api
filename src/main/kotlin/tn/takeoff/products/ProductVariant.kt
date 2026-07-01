@@ -1,7 +1,11 @@
 package tn.takeoff.products
 
 import jakarta.persistence.*
+import jakarta.persistence.LockModeType
 import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.data.jpa.repository.Lock
+import org.springframework.data.jpa.repository.Query
+import org.springframework.data.repository.query.Param
 import java.util.UUID
 
 @Entity
@@ -16,5 +20,10 @@ class ProductVariant(
 
 interface ProductVariantRepository : JpaRepository<ProductVariant, UUID> {
     fun findByProductIdOrderByDisplayOrder(productId: UUID): List<ProductVariant>
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT v FROM ProductVariant v WHERE v.productId = :productId ORDER BY v.displayOrder")
+    fun findByProductIdForUpdate(@Param("productId") productId: UUID): List<ProductVariant>
+
     fun deleteByProductId(productId: UUID)
 }
