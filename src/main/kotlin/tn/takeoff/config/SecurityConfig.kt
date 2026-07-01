@@ -89,6 +89,7 @@ class SecurityConfig(private val jwtService: JwtService, private val env: Enviro
                     .requestMatchers(HttpMethod.GET, "/api/v1/products/**", "/api/v1/courts/**", "/api/v1/coaches/**", "/api/v1/content/**").permitAll()
                     .requestMatchers(HttpMethod.GET, "/api/v1/classes/schedule", "/api/v1/classes/packs").permitAll()
                     .requestMatchers(HttpMethod.POST, "/api/v1/coaching/inquiry").permitAll()
+                    .requestMatchers(HttpMethod.POST, "/api/v1/payments/webhook").permitAll()
                     .requestMatchers(
                         "/error",
                         "/swagger-ui/**",

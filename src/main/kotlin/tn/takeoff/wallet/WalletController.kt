@@ -1,38 +1,26 @@
-package tn.takeoff.wallet
+﻿package tn.takeoff.wallet
 
-import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.*
 import tn.takeoff.auth.JwtService
-import tn.takeoff.users.WalletEntryType
 import tn.takeoff.users.WalletLedgerRepository
-import tn.takeoff.users.WalletService
 import java.math.BigDecimal
 
 @RestController
 @RequestMapping("/api/v1/wallet")
 class WalletController(
-    private val walletService: WalletService,
     private val ledgerRepo: WalletLedgerRepository,
 ) {
     data class TopUpRequest(val amountDt: BigDecimal)
-    data class TopUpResponse(val newBalanceDt: BigDecimal, val message: String)
 
     @PostMapping("/topup")
-    @ResponseStatus(HttpStatus.OK)
-    fun topUp(
+    fun topup(
+        @RequestBody req: TopUpRequest,
         @AuthenticationPrincipal claims: JwtService.Claims,
-        @RequestBody dto: TopUpRequest,
-    ): TopUpResponse {
-        if (dto.amountDt <= BigDecimal.ZERO)
-            throw IllegalArgumentException("Amount must be positive")
-        val newBalance = walletService.apply(
-            userId = claims.userId,
-            delta = dto.amountDt,
-            type = WalletEntryType.TOPUP,
-            reason = "member_topup",
-        )
-        return TopUpResponse(newBalance, "Top-up successful")
+    ): ResponseEntity<Any> {
+        return ResponseEntity.status(405)
+            .body(mapOf("error" to "Direct wallet top-up is disabled. Contact staff or use the payment flow."))
     }
 
     @GetMapping("/transactions")

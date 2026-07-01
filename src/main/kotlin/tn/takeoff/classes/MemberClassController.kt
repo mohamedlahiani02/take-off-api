@@ -2,7 +2,11 @@
 
 import org.springframework.http.HttpStatus
 import org.springframework.security.core.annotation.AuthenticationPrincipal
+import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.bind.annotation.*
+import tn.takeoff.users.UserGateway
+import tn.takeoff.users.WalletEntryType
+import tn.takeoff.users.WalletService
 import tn.takeoff.auth.JwtService
 import tn.takeoff.common.errors.BadRequestException
 import tn.takeoff.common.errors.NotFoundException
@@ -17,8 +21,6 @@ import tn.takeoff.packs.UserPackStatus
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.temporal.ChronoUnit
-import jakarta.validation.Valid
-import jakarta.validation.constraints.NotNull
 import java.util.UUID
 
 // â”€â”€ Public schedule â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -49,6 +51,8 @@ class MemberClassController(
     private val ledger: PackCreditLedgerRepository,
     private val packTypes: PackTypeRepository,
     private val jwtService: JwtService,
+    private val userGateway: UserGateway,
+    private val walletService: WalletService,
 ) {
     // â”€â”€ Public schedule â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -218,12 +222,31 @@ class MemberClassController(
 
     @PostMapping("/packs/purchase")
     @ResponseStatus(HttpStatus.CREATED)
+    @Transactional
     fun purchasePack(
         @RequestBody req: PurchasePackRequest,
         @AuthenticationPrincipal claims: JwtService.Claims,
     ): Map<String, Any?> {
         val packType = packTypes.findById(req.packTypeId).orElseThrow { NotFoundException("packType", req.packTypeId) }
         if (!packType.active) throw BadRequestException("takeoff.pack.inactive", "Pack not available")
+
+        val user = userGateway.findById(claims.userId)
+            .orElseThrow { NotFoundException("user", claims.userId) }
+        if (user.walletDt < packType.priceDt) {
+            throw BadRequestException(
+                "takeoff.wallet.insufficient_funds",
+                "Insufficient wallet balance. Required: ${packType.priceDt} DT, available: ${user.walletDt} DT."
+            )
+        }
+
+        walletService.apply(
+            userId = claims.userId,
+            delta = packType.priceDt.negate(),
+            type = WalletEntryType.PAYMENT,
+            reason = "pack_purchase",
+            refType = "pack_type",
+            refId = packType.id.toString(),
+        )
 
         val expiresAt = Instant.now().plus((packType.validityMonths * 30).toLong(), ChronoUnit.DAYS)
 
