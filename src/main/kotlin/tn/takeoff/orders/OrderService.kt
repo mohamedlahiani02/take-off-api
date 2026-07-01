@@ -1,4 +1,4 @@
-package tn.takeoff.orders
+﻿package tn.takeoff.orders
 
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.PageRequest
@@ -8,10 +8,12 @@ import org.springframework.transaction.annotation.Transactional
 import tn.takeoff.common.errors.BadRequestException
 import tn.takeoff.common.errors.NotFoundException
 import tn.takeoff.orders.dto.*
+import tn.takeoff.products.ProductGateway
 import tn.takeoff.products.ProductVariantRepository
 import tn.takeoff.users.UserGateway
 import tn.takeoff.users.WalletEntryType
 import tn.takeoff.users.WalletService
+import java.math.BigDecimal
 import java.time.Instant
 import java.util.UUID
 
@@ -21,6 +23,7 @@ class OrderService(
     private val userRepo: UserGateway,
     private val variantRepo: ProductVariantRepository,
     private val walletService: WalletService,
+    private val productGateway: ProductGateway,
 ) {
     companion object {
         private val TIMBRE_FISCAL = java.math.BigDecimal("1.000")
@@ -40,15 +43,42 @@ class OrderService(
 
     @Transactional
     fun place(userId: UUID?, dto: PlaceOrderRequest): OrderDto {
+        // Change C — Block guest wallet payment
+        if (dto.paymentMethod == PaymentMethod.WALLET && userId == null) {
+            throw BadRequestException("takeoff.order.wallet_requires_auth", "Wallet payment requires authentication")
+        }
+
         val user = userId?.let { userRepo.findById(it).orElse(null) }
         val ref = generateRef()
-        val subtotal = dto.items.sumOf { it.unitPriceDt.multiply(java.math.BigDecimal(it.qty)) }
+
+        // Change A — Server-side price lookup: resolve authoritative unit prices
+        val resolvedPrices = dto.items.map { item ->
+            if (item.productId != null) {
+                val product = productGateway.findById(item.productId).orElseThrow {
+                    BadRequestException("takeoff.product.not_found", "Product not found: ${item.productId}")
+                }
+                product.priceDt
+            } else {
+                item.unitPriceDt
+            }
+        }
+
+        val subtotal = dto.items.zip(resolvedPrices)
+            .sumOf { (item, price) -> price.multiply(BigDecimal(item.qty)) }
 
         // Timbre fiscal: 1 DT for orders with physical products >= 10 DT
         val hasPhysical = dto.items.any { it.productId != null }
-        val timbreFiscal = if (hasPhysical && subtotal >= TIMBRE_THRESHOLD) TIMBRE_FISCAL else java.math.BigDecimal.ZERO
+        val timbreFiscal = if (hasPhysical && subtotal >= TIMBRE_THRESHOLD) TIMBRE_FISCAL else BigDecimal.ZERO
 
-        val deliveryFee = dto.deliveryFeeDt.coerceAtLeast(java.math.BigDecimal.ZERO)
+        // Change B — Server-side delivery fee computation (ignore dto.deliveryFeeDt)
+        val deliveryFee = when (dto.deliveryMethod) {
+            DeliveryMethod.PICKUP -> BigDecimal.ZERO
+            DeliveryMethod.DELIVER -> {
+                val city = (dto.deliveryAddress?.get("city") ?: "").trim().lowercase()
+                if (city.isEmpty() || city == "tunis") BigDecimal("9.000") else BigDecimal("15.000")
+            }
+        }
+
         val total = subtotal.add(timbreFiscal).add(deliveryFee)
 
         // Stock check and decrement per variant (pessimistic locked)
@@ -81,17 +111,17 @@ class OrderService(
             timbreFiscalDt = timbreFiscal,
             deliveryFeeDt = deliveryFee,
             discountCode = dto.discountCode,
-            discountAmountDt = java.math.BigDecimal.ZERO,
+            discountAmountDt = BigDecimal.ZERO,
             contact = dto.contact,
         )
-        dto.items.forEach { item ->
+        dto.items.zip(resolvedPrices).forEach { (item, price) ->
             order.items.add(OrderItem(
                 order = order,
                 productId = item.productId,
                 productName = item.productName,
                 qty = item.qty,
                 size = item.size,
-                unitPriceDt = item.unitPriceDt,
+                unitPriceDt = price,
             ))
         }
 
@@ -114,10 +144,37 @@ class OrderService(
         if (order.status !in listOf(OrderStatus.PENDING, OrderStatus.CONFIRMED))
             throw BadRequestException("takeoff.order.not_cancellable", "Order cannot be cancelled in status ${order.status}")
 
+        doCancel(order)
+        return OrderDto.from(order)
+    }
+
+    @Transactional
+    fun updateStatus(orderId: UUID, action: String): OrderDto {
+        val order = orderRepo.findById(orderId).orElseThrow { NotFoundException("order", orderId) }
+        if (action.lowercase() == "cancel") {
+            doCancel(order)
+            return OrderDto.from(order)
+        }
+        order.status = when (action.lowercase()) {
+            "confirm" -> OrderStatus.CONFIRMED
+            "prepare" -> OrderStatus.PREPARING
+            "ship" -> OrderStatus.SHIPPED
+            "deliver" -> OrderStatus.DELIVERED
+            "pickup_ready" -> OrderStatus.PICKUP_READY
+            "picked_up" -> OrderStatus.PICKED_UP
+            else -> throw BadRequestException("takeoff.order.invalid_action", "Unknown action: $action")
+        }
+        order.updatedAt = Instant.now()
+        return OrderDto.from(orderRepo.save(order))
+    }
+
+    // Change E — Shared cancel logic
+    private fun doCancel(order: Order) {
         // Refund to wallet if paid via wallet
-        if (order.paymentMethod == PaymentMethod.WALLET && userId != null) {
+        val uid = order.user?.id
+        if (order.paymentMethod == PaymentMethod.WALLET && uid != null) {
             walletService.apply(
-                userId = userId, delta = order.totalDt,
+                userId = uid, delta = order.totalDt,
                 type = WalletEntryType.REFUND, reason = "order_cancel_${order.orderRef}",
                 refType = "order", refId = order.orderRef,
             )
@@ -139,28 +196,10 @@ class OrderService(
 
         order.status = OrderStatus.CANCELLED
         order.updatedAt = Instant.now()
-        return OrderDto.from(orderRepo.save(order))
+        orderRepo.save(order)
     }
 
-    @Transactional
-    fun updateStatus(orderId: UUID, action: String): OrderDto {
-        val order = orderRepo.findById(orderId).orElseThrow { NotFoundException("order", orderId) }
-        order.status = when (action.lowercase()) {
-            "confirm" -> OrderStatus.CONFIRMED
-            "prepare" -> OrderStatus.PREPARING
-            "ship" -> OrderStatus.SHIPPED
-            "deliver" -> OrderStatus.DELIVERED
-            "pickup_ready" -> OrderStatus.PICKUP_READY
-            "picked_up" -> OrderStatus.PICKED_UP
-            "cancel" -> OrderStatus.CANCELLED
-            else -> throw BadRequestException("takeoff.order.invalid_action", "Unknown action: $action")
-        }
-        order.updatedAt = Instant.now()
-        return OrderDto.from(orderRepo.save(order))
-    }
-
-    private fun generateRef(): String {
-        val suffix = (100000..999999).random()
-        return "TKO-$suffix"
-    }
+    // Change D — Collision-resistant order ref
+    private fun generateRef(): String =
+        "TKO-" + java.util.UUID.randomUUID().toString().replace("-", "").uppercase().take(10)
 }

@@ -1,5 +1,7 @@
-package tn.takeoff.orders.dto
+﻿package tn.takeoff.orders.dto
 
+import jakarta.validation.constraints.Min
+import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.NotEmpty
 import jakarta.validation.constraints.NotNull
 import tn.takeoff.orders.*
@@ -9,8 +11,8 @@ import java.util.UUID
 
 data class CartItemInput(
     val productId: UUID? = null,
-    val productName: String,
-    val qty: Int = 1,
+    @field:NotBlank val productName: String,
+    @field:Min(1) val qty: Int = 1,
     val size: String? = null,
     val unitPriceDt: BigDecimal,
 )
@@ -28,7 +30,7 @@ data class PlaceOrderRequest(
 data class OrderItemDto(
     val id: UUID,
     val productId: UUID?,
-    val productName: String,
+    @field:NotBlank val productName: String,
     val qty: Int,
     val size: String?,
     val unitPriceDt: BigDecimal,
@@ -59,13 +61,13 @@ data class OrderDto(
             status = o.status,
             statusLabel = when (o.status) {
                 OrderStatus.PENDING      -> "Confirmation client"
-                OrderStatus.CONFIRMED    -> "Confirmée"
-                OrderStatus.PREPARING    -> "En préparation"
-                OrderStatus.SHIPPED      -> "Expédier"
-                OrderStatus.DELIVERED    -> "Livrée"
-                OrderStatus.PICKUP_READY -> "Prêt à retirer"
-                OrderStatus.PICKED_UP    -> "Retiré"
-                OrderStatus.CANCELLED    -> "Annulée"
+                OrderStatus.CONFIRMED    -> "ConfirmÃ©e"
+                OrderStatus.PREPARING    -> "En prÃ©paration"
+                OrderStatus.SHIPPED      -> "ExpÃ©dier"
+                OrderStatus.DELIVERED    -> "LivrÃ©e"
+                OrderStatus.PICKUP_READY -> "PrÃªt Ã  retirer"
+                OrderStatus.PICKED_UP    -> "RetirÃ©"
+                OrderStatus.CANCELLED    -> "AnnulÃ©e"
             },
             deliveryMethod = o.deliveryMethod,
             deliveryAddress = o.deliveryAddress,
@@ -88,3 +90,4 @@ data class OrderDto(
 data class UpdateOrderStatusRequest(
     @field:NotNull val action: String,
 )
+
