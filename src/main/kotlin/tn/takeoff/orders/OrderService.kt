@@ -30,11 +30,13 @@ class OrderService(
         private val TIMBRE_THRESHOLD = java.math.BigDecimal("10.000")
     }
 
+    @Transactional(readOnly = true)
     fun myOrders(userId: UUID, page: Int, size: Int): Page<OrderDto> {
         val pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"))
         return orderRepo.findAllByUser_Id(userId, pageable).map { OrderDto.from(it) }
     }
 
+    @Transactional(readOnly = true)
     fun getById(id: UUID, userId: UUID): OrderDto {
         val order = orderRepo.findById(id).orElseThrow { NotFoundException("order", id) }
         if (order.user?.id != userId) throw NotFoundException("order", id)
