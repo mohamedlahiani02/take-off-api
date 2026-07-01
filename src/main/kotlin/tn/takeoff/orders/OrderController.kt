@@ -31,4 +31,10 @@ class OrderController(private val service: OrderService) {
         @AuthenticationPrincipal claims: JwtService.Claims?,
         @Valid @RequestBody dto: PlaceOrderRequest,
     ): OrderDto = service.place(claims?.userId, dto)
+
+    @PostMapping("/{id}/cancel")
+    fun cancel(
+        @AuthenticationPrincipal claims: JwtService.Claims,
+        @PathVariable id: java.util.UUID,
+    ): OrderDto = service.cancelMine(id, claims.userId)
 }
