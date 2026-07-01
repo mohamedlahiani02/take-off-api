@@ -1,4 +1,4 @@
-package tn.takeoff.admin.classes
+﻿package tn.takeoff.admin.classes
 
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -6,6 +6,11 @@ import tn.takeoff.admin.audit.AuditService
 import tn.takeoff.admin.users.AdminUserService
 import tn.takeoff.admin.users.CreateGhostRequest
 import tn.takeoff.classes.*
+import tn.takeoff.packs.CreditEntryType
+import tn.takeoff.packs.PackCreditLedger
+import tn.takeoff.packs.PackCreditLedgerRepository
+import tn.takeoff.packs.UserPackRepository
+import tn.takeoff.packs.UserPackStatus
 import tn.takeoff.common.errors.BadRequestException
 import tn.takeoff.common.errors.ConflictException
 import tn.takeoff.common.errors.NotFoundException
@@ -24,6 +29,8 @@ class AdminClassService(
     private val types: ClassTypeRepository,
     private val sessions: ClassSessionRepository,
     private val bookings: ClassBookingRepository,
+    private val userPacks: UserPackRepository,
+    private val ledger: PackCreditLedgerRepository,
     private val adminUserService: AdminUserService,
     private val auditService: AuditService,
 ) {
@@ -98,6 +105,19 @@ class AdminClassService(
         sessions.save(s)
         bookings.findBySessionId(id).forEach {
             if (it.status == ClassBookingStatus.BOOKED || it.status == ClassBookingStatus.WAITLIST) {
+                if (it.status == ClassBookingStatus.BOOKED && it.paidWith == PaidWith.PACK && it.userPackId != null) {
+                    userPacks.findById(it.userPackId!!).ifPresent { up ->
+                        val restored = (up.creditsRemaining ?: 0) + 1
+                        up.creditsRemaining = restored
+                        if (up.status == UserPackStatus.EXPIRED) up.status = UserPackStatus.ACTIVE
+                        userPacks.save(up)
+                        ledger.save(PackCreditLedger(
+                            userPackId = up.id, delta = 1,
+                            type = CreditEntryType.REFUND, reason = "session_cancel_refund",
+                            refType = "class_booking", refId = it.id.toString(),
+                        ))
+                    }
+                }
                 it.status = ClassBookingStatus.CANCELLED; it.updatedAt = Instant.now(); bookings.save(it)
             }
         }
@@ -157,3 +177,4 @@ class AdminClassService(
         return b
     }
 }
+
