@@ -1,8 +1,9 @@
-package tn.takeoff.config
+﻿package tn.takeoff.config
 
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.annotation.Order
+import org.springframework.core.env.Environment
 import org.springframework.http.HttpMethod
 import org.springframework.http.HttpStatus
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity
@@ -24,7 +25,7 @@ import tn.takeoff.auth.JwtService
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
-class SecurityConfig(private val jwtService: JwtService) {
+class SecurityConfig(private val jwtService: JwtService, private val env: Environment) {
 
     @Bean
     fun adminJwtAuthFilter(): AdminJwtAuthFilter = AdminJwtAuthFilter(jwtService)
@@ -35,7 +36,9 @@ class SecurityConfig(private val jwtService: JwtService) {
     @Bean
     fun corsConfigurationSource(): CorsConfigurationSource {
         val config = CorsConfiguration().apply {
-            allowedOriginPatterns = listOf("*")
+            val originsStr = env.getProperty("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5500")
+            val origins = originsStr.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+            allowedOriginPatterns = origins
             allowedMethods = listOf("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
             allowedHeaders = listOf("*")
             allowCredentials = true
@@ -106,3 +109,4 @@ class SecurityConfig(private val jwtService: JwtService) {
     @Bean
     fun passwordEncoder(): PasswordEncoder = BCryptPasswordEncoder(12)
 }
+

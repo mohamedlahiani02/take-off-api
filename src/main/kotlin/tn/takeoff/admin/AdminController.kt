@@ -1,4 +1,4 @@
-package tn.takeoff.admin
+﻿package tn.takeoff.admin
 
 import jakarta.validation.Valid
 import org.springframework.data.domain.Page
@@ -24,6 +24,7 @@ class AdminController(
 ) {
 
     @GetMapping("/orders")
+    @PreAuthorize("hasAnyRole('SUPER_ADMIN','MANAGER','RECEPTION')")
     fun orders(
         @RequestParam(defaultValue = "0") page: Int,
         @RequestParam(defaultValue = "50") size: Int,
@@ -33,6 +34,7 @@ class AdminController(
     }
 
     @PatchMapping("/orders/{id}/status")
+    @PreAuthorize("hasAnyRole('SUPER_ADMIN','MANAGER','RECEPTION')")
     fun updateOrderStatus(
         @PathVariable id: UUID,
         @Valid @RequestBody dto: UpdateOrderStatusRequest,
@@ -47,3 +49,4 @@ class AdminController(
         return coachingRepo.findAll(pageable)
     }
 }
+
