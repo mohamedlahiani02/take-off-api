@@ -1,4 +1,4 @@
-package tn.takeoff.classes
+﻿package tn.takeoff.classes
 
 import org.springframework.http.HttpStatus
 import org.springframework.security.core.annotation.AuthenticationPrincipal
@@ -17,9 +17,11 @@ import tn.takeoff.packs.UserPackStatus
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.temporal.ChronoUnit
+import jakarta.validation.Valid
+import jakarta.validation.constraints.NotNull
 import java.util.UUID
 
-// ── Public schedule ─────────────────────────────────────────────────────────
+// â”€â”€ Public schedule â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 data class PublicSessionDto(
     val id: UUID,
@@ -48,7 +50,7 @@ class MemberClassController(
     private val packTypes: PackTypeRepository,
     private val jwtService: JwtService,
 ) {
-    // ── Public schedule ──────────────────────────────────────────────────────
+    // â”€â”€ Public schedule â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @GetMapping("/schedule")
     fun schedule(
@@ -85,14 +87,14 @@ class MemberClassController(
         }
     }
 
-    // ── Member class booking ─────────────────────────────────────────────────
+    // â”€â”€ Member class booking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    data class BookRequest(val sessionId: UUID)
+    data class BookRequest(@field:NotNull val sessionId: UUID)
 
     @PostMapping("/bookings")
     @ResponseStatus(HttpStatus.CREATED)
     fun book(
-        @RequestBody req: BookRequest,
+        @Valid @RequestBody req: BookRequest,
         @AuthenticationPrincipal claims: JwtService.Claims,
     ): Map<String, Any?> {
         val session = sessions.findById(req.sessionId).orElseThrow { NotFoundException("session", req.sessionId) }
@@ -206,7 +208,7 @@ class MemberClassController(
         }
     }
 
-    // ── Pack catalogue + purchase ────────────────────────────────────────────
+    // â”€â”€ Pack catalogue + purchase â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @GetMapping("/packs")
     fun publicPackTypes(): List<PackType> =
@@ -254,7 +256,7 @@ class MemberClassController(
         }
     }
 
-    // ── helpers ──────────────────────────────────────────────────────────────
+    // â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private fun resolveMemberId(authHeader: String?): UUID? {
         if (authHeader.isNullOrBlank() || !authHeader.startsWith("Bearer ")) return null

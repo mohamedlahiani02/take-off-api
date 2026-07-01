@@ -16,6 +16,8 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import jakarta.validation.Valid
+import jakarta.validation.constraints.NotNull
 import java.util.UUID
 
 @RestController
@@ -103,7 +105,7 @@ class MemberCourtController(
     // ── POST /api/v1/courts/{id}/bookings ─────────────────────────────────
 
     data class BookCourtRequest(
-        val startsAt: String,
+        @field:NotNull val startsAt: String,
         val mode: BookingMode = BookingMode.FULL,
         val paymentMethod: CourtPaymentMethod = CourtPaymentMethod.PAY_AT_CLUB,
     )
@@ -113,7 +115,7 @@ class MemberCourtController(
     @Transactional
     fun book(
         @PathVariable id: UUID,
-        @RequestBody req: BookCourtRequest,
+        @Valid @RequestBody req: BookCourtRequest,
         @AuthenticationPrincipal claims: JwtService.Claims,
     ): Map<String, Any?> {
         val court = courts.findById(id).orElseThrow { NotFoundException("court", id) }
