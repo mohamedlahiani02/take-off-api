@@ -136,6 +136,12 @@ class OrderService(
             )
         }
 
+        // Wallet and card payments are settled at checkout → skip the admin-approval PENDING step
+        if (dto.paymentMethod == PaymentMethod.WALLET || dto.paymentMethod == PaymentMethod.CARD) {
+            order.status = OrderStatus.CONFIRMED
+            order.updatedAt = Instant.now()
+        }
+
         return OrderDto.from(orderRepo.save(order))
     }
 
