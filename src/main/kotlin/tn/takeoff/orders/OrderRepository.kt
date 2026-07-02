@@ -8,4 +8,5 @@ import java.util.UUID
 interface OrderRepository : JpaRepository<Order, UUID>, OrderGateway {
     override fun findAllByUser_Id(userId: UUID, pageable: Pageable): Page<Order>
     override fun findAllByOrderByCreatedAtDesc(pageable: Pageable): Page<Order>
+    override fun findByStatusOrderByCreatedAtDesc(status: OrderStatus, pageable: Pageable): Page<Order>
 }

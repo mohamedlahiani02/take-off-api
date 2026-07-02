@@ -9,5 +9,6 @@ interface OrderGateway {
     fun findById(id: UUID): Optional<Order>
     fun findAllByUser_Id(userId: UUID, pageable: Pageable): Page<Order>
     fun findAllByOrderByCreatedAtDesc(pageable: Pageable): Page<Order>
+    fun findByStatusOrderByCreatedAtDesc(status: OrderStatus, pageable: Pageable): Page<Order>
     fun save(order: Order): Order
 }
