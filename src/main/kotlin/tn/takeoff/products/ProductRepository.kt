@@ -8,15 +8,13 @@ import java.util.UUID
 
 interface ProductRepository : JpaRepository<Product, UUID>, ProductGateway {
 
-    @Query("""
-        SELECT p FROM Product p
-        WHERE p.isActive = true
-          AND (:category IS NULL OR p.category = :category)
-          AND (:search IS NULL OR LOWER(p.name) LIKE LOWER(CONCAT('%', :search, '%')))
-    """)
-    override fun search(
-        category: ProductCategory?,
-        search: String?,
-        pageable: Pageable,
-    ): Page<Product>
+    override fun findByIsActiveTrue(pageable: Pageable): Page<Product>
+
+    override fun findByIsActiveTrueAndCategory(category: ProductCategory, pageable: Pageable): Page<Product>
+
+    @Query("SELECT p FROM Product p WHERE p.isActive = true AND LOWER(p.name) LIKE LOWER(CONCAT('%', :search, '%'))")
+    override fun searchActive(search: String, pageable: Pageable): Page<Product>
+
+    @Query("SELECT p FROM Product p WHERE p.isActive = true AND p.category = :category AND LOWER(p.name) LIKE LOWER(CONCAT('%', :search, '%'))")
+    override fun searchActiveByCategory(category: ProductCategory, search: String, pageable: Pageable): Page<Product>
 }
