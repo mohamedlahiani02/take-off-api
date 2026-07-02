@@ -1,6 +1,7 @@
 package tn.takeoff.admin.tournaments
 
 import jakarta.validation.Valid
+import org.springframework.http.HttpStatus
 import org.springframework.security.access.prepost.PreAuthorize
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.*
@@ -29,6 +30,7 @@ class AdminTournamentController(private val service: AdminTournamentService) {
         service.update(id, req, a.adminId)
 
     @DeleteMapping("/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
     fun delete(@PathVariable id: UUID, @AuthenticationPrincipal a: JwtService.AdminClaims) = service.delete(id, a.adminId)
 
     @PostMapping("/{id}/status")
