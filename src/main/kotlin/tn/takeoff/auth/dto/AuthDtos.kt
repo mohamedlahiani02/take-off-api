@@ -79,4 +79,6 @@ data class UpdateMeRequest(
     val name: String? = null,
     val phone: String? = null,
     val tracks: List<String>? = null,
+    val currentPassword: String? = null,
+    val newPassword: String? = null,
 )

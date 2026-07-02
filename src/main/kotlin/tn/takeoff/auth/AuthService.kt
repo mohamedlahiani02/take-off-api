@@ -110,6 +110,13 @@ class AuthService(
         dto.name?.let { user.name = it }
         dto.phone?.let { user.phone = it }
         dto.tracks?.let { user.tracks = it.toTypedArray() }
+        if (dto.currentPassword != null && dto.newPassword != null) {
+            if (!passwordEncoder.matches(dto.currentPassword, user.passwordHash))
+                throw UnauthorizedException("takeoff.auth.wrong_password", "Current password is incorrect")
+            if (dto.newPassword.length < 8)
+                throw tn.takeoff.common.errors.BadRequestException("takeoff.auth.weak_password", "Password must be at least 8 characters")
+            user.passwordHash = passwordEncoder.encode(dto.newPassword)
+        }
         user.updatedAt = Instant.now()
         return UserDto.from(userRepo.save(user))
     }
