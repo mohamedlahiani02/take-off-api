@@ -20,6 +20,7 @@ import java.math.BigDecimal
 import java.util.UUID
 
 data class VariantRequest(val size: String, val stock: Int = 0)
+data class StockAdjustRequest(val delta: Int, val variantId: String? = null)
 
 data class ProductRequest(
     @field:NotBlank val name: String,
@@ -84,6 +85,23 @@ class AdminProductService(
         products.delete(p) // variants cascade via FK ON DELETE CASCADE
         auditService.log(adminId, "product.delete", "product", id.toString())
     }
+
+    @Transactional
+    fun adjustStock(productId: UUID, req: StockAdjustRequest, adminId: UUID): ProductDetail {
+        val p = products.findById(productId).orElseThrow { NotFoundException("product", productId) }
+        if (req.variantId != null) {
+            val vid = runCatching { UUID.fromString(req.variantId) }
+                .getOrElse { throw tn.takeoff.common.errors.BadRequestException("takeoff.product.bad_variant", "Invalid variant id") }
+            val variant = variants.findById(vid).orElseThrow { NotFoundException("variant", vid) }
+            variant.stock = maxOf(0, variant.stock + req.delta)
+            variants.save(variant)
+        } else {
+            p.stock = maxOf(0, p.stock + req.delta)
+            products.save(p)
+        }
+        auditService.log(adminId, "product.stock_adjust", "product", productId.toString())
+        return ProductDetail(p, variants.findByProductIdOrderByDisplayOrder(productId))
+    }
 }
 
 @RestController
@@ -103,4 +121,11 @@ class AdminProductController(private val service: AdminProductService) {
 
     @DeleteMapping("/{id}")
     fun delete(@PathVariable id: UUID, @AuthenticationPrincipal a: JwtService.AdminClaims) = service.delete(id, a.adminId)
+
+    @PatchMapping("/{id}/stock")
+    fun adjustStock(
+        @PathVariable id: UUID,
+        @RequestBody req: StockAdjustRequest,
+        @AuthenticationPrincipal a: JwtService.AdminClaims,
+    ): ProductDetail = service.adjustStock(id, req, a.adminId)
 }

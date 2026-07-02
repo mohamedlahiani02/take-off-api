@@ -10,9 +10,11 @@ import org.springframework.web.bind.annotation.*
 import tn.takeoff.coaching.CoachingGateway
 import tn.takeoff.coaching.CoachingInquiry
 import tn.takeoff.orders.OrderGateway
+import tn.takeoff.orders.OrderStatus
 import tn.takeoff.orders.dto.OrderDto
 import tn.takeoff.orders.OrderService
 import tn.takeoff.orders.dto.UpdateOrderStatusRequest
+import tn.takeoff.common.errors.NotFoundException
 import tn.takeoff.users.UserGateway
 import tn.takeoff.users.WalletEntryType
 import tn.takeoff.users.WalletService
@@ -37,9 +39,21 @@ class AdminController(
     fun orders(
         @RequestParam(defaultValue = "0") page: Int,
         @RequestParam(defaultValue = "50") size: Int,
+        @RequestParam(required = false) status: String?,
     ): Page<OrderDto> {
         val pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"))
-        return orderRepo.findAllByOrderByCreatedAtDesc(pageable).map { tn.takeoff.orders.dto.OrderDto.from(it) }
+        val statusEnum = status?.let { runCatching { OrderStatus.valueOf(it.uppercase()) }.getOrNull() }
+        return if (statusEnum != null)
+            orderRepo.findByStatusOrderByCreatedAtDesc(statusEnum, pageable).map { OrderDto.from(it) }
+        else
+            orderRepo.findAllByOrderByCreatedAtDesc(pageable).map { OrderDto.from(it) }
+    }
+
+    @GetMapping("/orders/{id}")
+    @Transactional(readOnly = true)
+    fun orderDetail(@PathVariable id: UUID): OrderDto {
+        val order = orderRepo.findById(id).orElseThrow { NotFoundException("order", id) }
+        return OrderDto.from(order)
     }
 
     @PatchMapping("/orders/{id}/status")
