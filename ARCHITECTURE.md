@@ -126,8 +126,8 @@ branch; shipping requires promoting `main → production`. See `README`/CI for t
 ### 4.1 Stack
 
 Kotlin 1.9.25 on **JVM 21**, **Spring Boot 3.5.0**: Web MVC, Data JPA/Hibernate 6, Security,
-Bean Validation, Actuator. Persistence in **PostgreSQL**, schema owned by **Flyway** (21 migrations
-through `V21`). JWT via **Auth0 `java-jwt` (RS256)**. Image upload/CDN via **Cloudinary**. API docs
+Bean Validation, Actuator. Persistence in **PostgreSQL**, schema owned by **Flyway** (23 migrations
+through `V23`). JWT via **Auth0 `java-jwt` (RS256)**. Image upload/CDN via **Cloudinary**. API docs
 via **SpringDoc / Swagger UI**. Build with Gradle Kotlin DSL; container image via `Dockerfile`.
 
 ### 4.2 Package layout — feature-first, not layer-first
@@ -171,12 +171,13 @@ ceremony.
 
 ### 4.4 Data & migrations
 
-Schema is versioned in `src/main/resources/db/migration` (`V1__…` … `V21__…`); nothing is
-auto-DDL'd in production. Recent migrations show the domain maturing: product variants (`V17`),
-order enhancements (`V18`), payment intents (`V19`), nullable product FK on order items (`V20`),
-seed pilates class types (`V21`, idempotent — only fires when `class_types` is empty). A companion
-`PilatesScheduleSeeder` (opt-out via `SEED_PILATES_SCHEDULE=false`) rolls a full weekly reformer/mat
-schedule forward from the current week so the public timetable is never empty in a fresh environment.
+Schema is versioned in `src/main/resources/db/migration` (`V1__…` … `V23__…`); nothing is
+auto-DDL'd in production. Recent migrations: product variants (`V17`), order enhancements (`V18`),
+payment intents (`V19`), nullable product FK on order items (`V20`), seed pilates class types (`V21`,
+idempotent), comprehensive dummy data — tournaments, pack types, class photos, CMS sections (`V22`),
+force-update CMS hero text to correct Sfax location (`V23`). A companion `PilatesScheduleSeeder`
+(opt-out via `SEED_PILATES_SCHEDULE=false`) rolls a full weekly reformer/mat schedule forward from
+the current week so the public timetable is never empty in a fresh environment.
 
 ---
 
