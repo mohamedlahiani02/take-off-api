@@ -87,6 +87,7 @@ class SecurityConfig(private val jwtService: JwtService, private val env: Enviro
                         "/api/v1/auth/reset-password",
                     ).permitAll()
                     .requestMatchers(HttpMethod.GET, "/api/v1/products/**", "/api/v1/courts/**", "/api/v1/coaches/**", "/api/v1/content/**").permitAll()
+                    .requestMatchers(HttpMethod.GET, "/api/v1/tournaments").permitAll()
                     .requestMatchers(HttpMethod.GET, "/api/v1/classes/schedule", "/api/v1/classes/packs").permitAll()
                     .requestMatchers(HttpMethod.POST, "/api/v1/coaching/inquiry").permitAll()
                     .requestMatchers(HttpMethod.POST, "/api/v1/payments/webhook").permitAll()
