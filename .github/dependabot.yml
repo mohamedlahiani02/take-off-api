@@ -1,8 +1,8 @@
 version: 2
 
 updates:
-  # npm / pnpm packages
-  - package-ecosystem: npm
+  # Gradle / JVM dependencies (Spring Boot, Kotlin)
+  - package-ecosystem: gradle
     directory: /
     schedule:
       interval: weekly
@@ -14,8 +14,10 @@ updates:
       - dependencies
       - automated
     ignore:
-      # Pin major versions manually
-      - dependency-name: "@nestjs/*"
+      # Pin Spring Boot / Kotlin majors for manual review
+      - dependency-name: "org.springframework.boot:*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "org.jetbrains.kotlin:*"
         update-types: ["version-update:semver-major"]
 
   # GitHub Actions

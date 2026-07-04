@@ -1,108 +1,89 @@
 # Take Off API
 
-NestJS 11 + Fastify backend for the Take Off sports club platform (Padel + Pilates + Store).
+**Spring Boot 3.5 + Kotlin** REST backend for the Take Off sports club platform in Sfax, Tunisia
+(Padel · Pilates · Store · Coaching). Serves the [`take-off-web`](https://github.com/mohamedlahiani02/take-off-web)
+frontend over a versioned `/api/v1` HTTP API.
 
-## References
+## Tech stack
 
-- [ARCHITECTURE.md](../ARCHITECTURE.md) — domain model, API contracts, business logic
-- [INFRASTRUCTURE.md](../INFRASTRUCTURE.md) — Docker Compose, Caddy, CI/CD, secrets
-- [BOOTSTRAP.md](../BOOTSTRAP.md) — Day-1 setup guide (start here if you're new)
+- **Kotlin 1.9.25** on **JVM 21**, **Spring Boot 3.5** (Web MVC, Data JPA, Security, Validation, Actuator)
+- **PostgreSQL** with **Flyway** migrations (schema is versioned, never auto-DDL'd)
+- **RS256 JWT** auth (Auth0 `java-jwt`) — separate member and admin security chains
+- **Cloudinary** for image upload / CDN
+- **SpringDoc / Swagger UI** for API docs
+- **Konnect** payment gateway (server-initiated intents + signed webhook)
+- Gradle (Kotlin DSL) build, containerised via `Dockerfile`
 
-## Local development quickstart
+## Architecture
+
+See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for the full system design (frontend + backend),
+the feature-first package layout, the Controller → Service → Gateway → Repository layering, the
+security model, and the payment flow.
+
+## Local development
 
 ### Prerequisites
 
-- Node.js 20+
-- pnpm 9+
-- Docker + Docker Compose plugin
+- **JDK 21**
+- A **PostgreSQL** instance (local or Docker)
 
-### 1. Install dependencies
-
-```bash
-pnpm install
-```
-
-### 2. Generate JWT keys
+### 1. Generate JWT keys (RS256)
 
 ```bash
-openssl genrsa -out jwt.private.pem 4096
-openssl rsa -in jwt.private.pem -pubout -out jwt.public.pem
+scripts/gen-keys.sh        # writes keys/private.pem and keys/public.pem
 ```
 
-### 3. Start backing services
+### 2. Configure environment
 
 ```bash
-docker compose -f infra/local/docker-compose.yml up -d
+cp .env.example .env       # set DATABASE_URL, JWT_*_KEY_PATH, FRONTEND_URL, …
 ```
 
-This starts Postgres 16, Redis 7, Mailhog (SMTP), and MinIO (S3).
+Secrets (DB credentials, JWT keys) are supplied via environment variables only — **never commit
+them**. In production, Railway injects `DATABASE_URL`.
 
-### 4. Configure environment
+### 3. Run
 
 ```bash
-cp .env.example .env
-# Edit .env — DATABASE_URL, REDIS_URL are pre-filled for local Docker
+./gradlew bootRun          # API on http://localhost:8080
 ```
 
-### 5. Run migrations
+- Swagger UI: `http://localhost:8080/swagger-ui.html`
+- Health: `http://localhost:8080/actuator/health`
 
-```bash
-pnpm db:migrate
-```
+Flyway applies pending migrations from `src/main/resources/db/migration` on startup.
 
-### 6. Start the API
+## Gradle tasks
 
-```bash
-pnpm dev
-```
-
-API is live at `http://localhost:3001`.
-OpenAPI docs at `http://localhost:3001/docs`.
-
-## Available scripts
-
-| Script | Description |
+| Task | Description |
 |---|---|
-| `pnpm dev` | Start with watch mode (ts-node via nest CLI) |
-| `pnpm build` | Compile TypeScript to `dist/` |
-| `pnpm start` | Run compiled `dist/main.js` |
-| `pnpm lint` | ESLint with zero-warning policy |
-| `pnpm typecheck` | TypeScript compiler check (no emit) |
-| `pnpm test` | Vitest unit tests |
-| `pnpm db:generate` | Generate a new Drizzle migration from schema changes |
-| `pnpm db:migrate` | Apply pending migrations |
-| `pnpm db:studio` | Open Drizzle Studio (DB browser) |
-| `pnpm db:check` | Check for schema drift |
+| `./gradlew bootRun` | Run the API locally |
+| `./gradlew build` | Compile + test + assemble the jar |
+| `./gradlew test` | JUnit 5 test suite |
+| `./gradlew bootJar` | Build the runnable jar (used by the Docker image) |
 
 ## Project structure
 
 ```
-src/
-├── main.ts                  # Fastify bootstrap, Swagger, Sentry
-├── app.module.ts            # Root module
-├── common/
-│   ├── problem-details.filter.ts   # RFC 7807 exception filter
-│   ├── idempotency.interceptor.ts  # Idempotency-Key Redis caching
-│   ├── audit.interceptor.ts        # Audit log placeholder
-│   └── current-user.decorator.ts
-├── infrastructure/
-│   ├── drizzle.module.ts / drizzle.service.ts
-│   ├── redis.module.ts / redis.service.ts
-│   ├── r2.client.ts
-│   ├── resend.client.ts
-│   └── konnect.client.ts
-└── modules/
-    ├── identity/     # Auth, registration, JWT
-    ├── padel/        # Courts, slots, bookings, packs, ranking, tournaments
-    ├── pilates/      # Class definitions, sessions, reservations
-    ├── catalog/      # Products, variants
-    ├── orders/       # Checkout, orders
-    ├── payments/     # Payment intents, webhooks
-    ├── wallet/       # Ledger, top-up
-    ├── ranking/      # ELO, ladder
-    ├── coaching/     # Coaches, inquiries
-    ├── content/      # Partners, FAQ, hours
-    └── notifications/ # Outbox consumer worker
+src/main/kotlin/tn/takeoff/
+├── auth          # JWT issue/verify, login, refresh, password reset
+├── users         # member profile / identity
+├── wallet        # TND credit ledger
+├── products      # catalog + variants
+├── orders        # cart checkout → orders, status lifecycle
+├── courts        # padel courts, availability, blocks, bookings
+├── classes       # pilates schedule + packs
+├── coaches       # public coach profiles
+├── coaching      # coaching-inquiry funnel (lead capture)
+├── packs         # credit packs
+├── payments      # Konnect payment intents + webhook fulfillment
+├── tournaments   # ladder / events
+├── cms           # editable site content
+├── common        # errors, pagination
+├── config        # security, JWT props, web/CORS, env diagnostics
+└── admin         # staff-facing management endpoints (per domain)
+
+src/main/resources/db/migration/   # Flyway V1__… … V20__…
 ```
 
 ## Environment variables
