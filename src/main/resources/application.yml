@@ -1,4 +1,4 @@
-spring:
+﻿spring:
   application:
     name: take-off-api
   servlet:
@@ -43,6 +43,7 @@ takeoff:
     private-key-path: ${JWT_PRIVATE_KEY_PATH:keys/private.pem}
     public-key-path: ${JWT_PUBLIC_KEY_PATH:keys/public.pem}
     access-ttl-seconds: ${JWT_ACCESS_TTL:900}
+    admin-access-ttl-seconds: ${JWT_ADMIN_ACCESS_TTL:28800}
     refresh-ttl-seconds: ${JWT_REFRESH_TTL:604800}
   cors:
     allowed-origins: ${FRONTEND_URL:http://localhost:3000}

@@ -1,4 +1,4 @@
-package tn.takeoff.auth
+﻿package tn.takeoff.auth
 
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
@@ -90,7 +90,7 @@ class JwtService(private val props: JwtProperties) {
             .withClaim("name", claims.name)
             .withClaim("role", claims.role.name)
             .withIssuedAt(Date.from(now))
-            .withExpiresAt(Date.from(now.plusSeconds(props.accessTtlSeconds)))
+            .withExpiresAt(Date.from(now.plusSeconds(props.adminAccessTtlSeconds)))
             .sign(algorithm)
     }
 
