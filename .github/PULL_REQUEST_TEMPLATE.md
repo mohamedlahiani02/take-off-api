@@ -9,7 +9,7 @@
 
 - [ ] Bug fix
 - [ ] New feature / endpoint
-- [ ] Drizzle schema change (migration included?)
+- [ ] Database schema change (Flyway migration included?)
 - [ ] Infrastructure / CI change
 - [ ] Refactoring (no behaviour change)
 

@@ -2,14 +2,13 @@
 # Ref: INFRASTRUCTURE.md §6 (Branch model)
 
 # Default — all files require review
-*                           @your-org/backend-team
+*                                   @mohamedlahiani02
 
 # DB schema changes are high-risk — require explicit sign-off
-drizzle/schema/**           @your-org/backend-team
-drizzle/migrations/**       @your-org/backend-team
+src/main/resources/db/migration/**  @mohamedlahiani02
 
 # Infrastructure changes require ops sign-off
-infra/**                    @your-org/backend-team
-scripts/**                  @your-org/backend-team
-.github/workflows/**        @your-org/backend-team
-Dockerfile                  @your-org/backend-team
+infra/**                            @mohamedlahiani02
+scripts/**                          @mohamedlahiani02
+.github/workflows/**                @mohamedlahiani02
+Dockerfile                          @mohamedlahiani02
