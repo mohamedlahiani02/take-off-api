@@ -25,13 +25,14 @@ import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.UUID
 
-// â”€â”€ Public schedule â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Public schedule ─────────────────────────────────────────────────────────
 
 data class PublicSessionDto(
     val id: UUID,
     val classTypeId: UUID,
     val className: String,
     val level: String?,
+    val instructorName: String?,
     val startsAt: Instant,
     val durationMin: Int,
     val priceDt: BigDecimal,
@@ -55,8 +56,9 @@ class MemberClassController(
     private val jwtService: JwtService,
     private val userGateway: UserGateway,
     private val walletService: WalletService,
+    private val coaches: tn.takeoff.coaches.CoachRepository,
 ) {
-    // â”€â”€ Public schedule â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Public schedule ──────────────────────────────────────────────────────
 
     @GetMapping("/schedule")
     fun schedule(
@@ -69,6 +71,7 @@ class MemberClassController(
         val memberId = resolveMemberId(auth)
 
         val typeMap = types.findAll().associateBy { it.id }
+        val coachMap = coaches.findAll().associateBy { it.id }
         val sessionList = sessions.findByStartsAtGreaterThanEqualAndStartsAtLessThanOrderByStartsAt(fromInstant, toInstant)
             .filter { it.status == SessionStatus.SCHEDULED }
 
@@ -85,6 +88,7 @@ class MemberClassController(
                 id = s.id, classTypeId = s.classTypeId,
                 className = typeMap[s.classTypeId]?.name ?: "Class",
                 level = typeMap[s.classTypeId]?.level,
+                instructorName = s.instructorId?.let { coachMap[it] }?.let { "${it.firstName} ${it.lastName}" },
                 startsAt = s.startsAt, durationMin = s.durationMin,
                 priceDt = s.priceDt, maxSpots = s.maxSpots,
                 bookedSpots = booked, waitlistCount = waitlist, status = s.status,
@@ -93,7 +97,7 @@ class MemberClassController(
         }
     }
 
-    // â”€â”€ Member class booking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Member class booking ─────────────────────────────────────────────────
 
     data class BookRequest(@field:NotNull val sessionId: UUID)
 
@@ -214,7 +218,7 @@ class MemberClassController(
         }
     }
 
-    // â”€â”€ Pack catalogue + purchase â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Pack catalogue + purchase ────────────────────────────────────────────
 
     @GetMapping("/packs")
     fun publicPackTypes(): List<PackType> =
@@ -281,7 +285,7 @@ class MemberClassController(
         }
     }
 
-    // â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── helpers ──────────────────────────────────────────────────────────────
 
     private fun resolveMemberId(authHeader: String?): UUID? {
         if (authHeader.isNullOrBlank() || !authHeader.startsWith("Bearer ")) return null

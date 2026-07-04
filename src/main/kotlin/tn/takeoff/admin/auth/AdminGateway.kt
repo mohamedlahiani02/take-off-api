@@ -9,4 +9,6 @@ interface AdminGateway {
     fun save(admin: Admin): Admin
     fun existsByEmail(email: String): Boolean
     fun count(): Long
+    fun findAllByOrderByCreatedAtAsc(): List<Admin>
+    fun countByRoleAndActive(role: AdminRole, active: Boolean): Long
 }

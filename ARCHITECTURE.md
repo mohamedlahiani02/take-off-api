@@ -106,8 +106,11 @@ explicit and documented (§8).
 - `app/(public)/{padel,pilates,store,coaches}` — route entries that render the prototype pages.
 - `app/(auth)/{login,register,forgot,reset}`, `app/account`, `app/checkout` — member flows.
 - `app/api/{auth,health}` — edge/server routes (health check, auth helpers).
-- `admin/` — internal management panel (`adminApi.js` + `index.html`): orders, products, courts,
-  classes, coaches, packs, tournaments, users/wallet.
+- `public/admin/` — internal management panel (`adminApi.js` + `index.html`): orders, products,
+  courts, classes, coaches, packs, tournaments, users/wallet, **media library**, and **staff
+  accounts** (SUPER_ADMIN-only CRUD over admin logins). This is the single source of truth; an older
+  divergent copy under a top-level `admin/` was reconciled into `public/admin/` so Next.js serves it
+  statically at `/admin`.
 - Cross-cutting: Tailwind v4, TanStack Query + Zustand (React islands), Sentry, CSP headers in
   `next.config.ts` (script/style/img/frame-src incl. Google Maps embed), Playwright e2e.
 
@@ -123,8 +126,8 @@ branch; shipping requires promoting `main → production`. See `README`/CI for t
 ### 4.1 Stack
 
 Kotlin 1.9.25 on **JVM 21**, **Spring Boot 3.5.0**: Web MVC, Data JPA/Hibernate 6, Security,
-Bean Validation, Actuator. Persistence in **PostgreSQL**, schema owned by **Flyway** (20 migrations
-through `V20`). JWT via **Auth0 `java-jwt` (RS256)**. Image upload/CDN via **Cloudinary**. API docs
+Bean Validation, Actuator. Persistence in **PostgreSQL**, schema owned by **Flyway** (21 migrations
+through `V21`). JWT via **Auth0 `java-jwt` (RS256)**. Image upload/CDN via **Cloudinary**. API docs
 via **SpringDoc / Swagger UI**. Build with Gradle Kotlin DSL; container image via `Dockerfile`.
 
 ### 4.2 Package layout — feature-first, not layer-first
@@ -168,9 +171,12 @@ ceremony.
 
 ### 4.4 Data & migrations
 
-Schema is versioned in `src/main/resources/db/migration` (`V1__…` … `V20__…`); nothing is
+Schema is versioned in `src/main/resources/db/migration` (`V1__…` … `V21__…`); nothing is
 auto-DDL'd in production. Recent migrations show the domain maturing: product variants (`V17`),
-order enhancements (`V18`), payment intents (`V19`), nullable product FK on order items (`V20`).
+order enhancements (`V18`), payment intents (`V19`), nullable product FK on order items (`V20`),
+seed pilates class types (`V21`, idempotent — only fires when `class_types` is empty). A companion
+`PilatesScheduleSeeder` (opt-out via `SEED_PILATES_SCHEDULE=false`) rolls a full weekly reformer/mat
+schedule forward from the current week so the public timetable is never empty in a fresh environment.
 
 ---
 
@@ -248,7 +254,42 @@ scripts, it is a leftover to be scrubbed rather than a live path.
 
 ---
 
-## 9. Local development
+## 9. Known issues & roadmap
+
+An honest account of what is wired end-to-end versus what is scaffolded. Kept here so the gaps are
+visible rather than surprising.
+
+**Admin → public propagation (audited).**
+
+| Domain | Admin edits reach the public site? |
+|---|---|
+| Coaches (incl. photos) | ✅ Yes — public pages fetch coach records and bind `photoUrl`. |
+| Courts / availability | ✅ Yes. |
+| Products / store | ✅ Yes. |
+| Classes / pilates schedule | ✅ Yes (now seeded so it renders full). |
+| CMS site content | ⚠️ Partial — only the **padel** and **pilates** pages read `content.page`. The coaches, store, and gateway pages still render hard-coded copy; editing them in the CMS has no effect yet. |
+| Tournaments | ⚠️ Disconnected — the admin tournaments module persists data, but the public padel page reads tournament copy from the CMS, not the tournaments API. |
+| Packs / pilates plans | ⚠️ Disconnected — the public pilates page shows hard-coded plan prices (300 / 420 DT) rather than the admin-managed pack types. |
+
+**Payments.** The Konnect flow is intent + signed-webhook complete but runs in **stub mode** until
+live credentials (`KONNECT_API_KEY`, `KONNECT_WEBHOOK_SECRET`) are set — see `project-konnect-todo`
+and §6. Until then card checkout falls through to a local success screen.
+
+**Test coverage.** Thin. The Gateway pattern makes services unit-testable, but domain services and
+the payment/fulfillment path are the priority gap; Playwright e2e on the frontend covers happy paths
+only.
+
+**Frontend build note.** Two rendering paradigms coexist (§3.1, §8): the `.dc.html` prototype pages
+and the React App Router. The asset-rewrite allowlist in `lib/prototype/serve.ts` must be kept in
+sync when shared assets are added.
+
+**Roadmap (near-term).** Wire CMS into the remaining public pages · connect the public padel page to
+the tournaments API and the pilates page to admin-managed packs · finish Konnect activation · grow
+service-layer and payment tests.
+
+---
+
+## 10. Local development
 
 **Backend**
 ```bash
