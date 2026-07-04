@@ -38,12 +38,11 @@ echo "IMAGE_TAG=${IMAGE_TAG}" >> .env
 echo "==> [deploy] Pulling image..."
 docker compose pull api
 
-# ── 4. Run DB migrations (online-safe) ────────────────────────
-echo "==> [deploy] Running Drizzle migrations..."
-docker compose run --rm --no-deps api node dist/main migrate || {
-  echo "ERROR: migrations failed — aborting deploy"
-  exit 1
-}
+# ── 4. DB migrations ──────────────────────────────────────────
+# Flyway runs automatically on Spring Boot startup (spring.flyway.enabled),
+# so migrations are applied when the api container boots in step 5. No
+# separate migrate command is required.
+echo "==> [deploy] Migrations run on startup via Flyway (no separate step)."
 
 # ── 5. Roll the api service (zero-downtime recreate) ──────────
 echo "==> [deploy] Restarting api service..."
@@ -51,9 +50,10 @@ docker compose up -d --remove-orphans api
 
 # ── 6. Health gate (30 × 2s = 60s max) ───────────────────────
 echo "==> [deploy] Waiting for health check..."
-PORT=$([[ "${ENV}" == "prod" ]] && echo "3000" || echo "3001")
+# The container listens on 8080 internally regardless of the host port mapping.
+PORT=8080
 for i in $(seq 1 30); do
-  if docker compose exec -T api wget -qO- "http://localhost:${PORT}/health" 2>/dev/null | grep -q '"ok":true'; then
+  if docker compose exec -T api wget -qO- "http://localhost:${PORT}/actuator/health" 2>/dev/null | grep -q '"status":"UP"'; then
     echo "==> [deploy] Health OK after ${i} attempts. Done."
     exit 0
   fi

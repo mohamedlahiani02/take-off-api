@@ -7,4 +7,6 @@ import java.util.UUID
 interface AdminRepository : JpaRepository<Admin, UUID>, AdminGateway {
     override fun findByEmail(email: String): Optional<Admin>
     override fun existsByEmail(email: String): Boolean
+    override fun findAllByOrderByCreatedAtAsc(): List<Admin>
+    override fun countByRoleAndActive(role: AdminRole, active: Boolean): Long
 }

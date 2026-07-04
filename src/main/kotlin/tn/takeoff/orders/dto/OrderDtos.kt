@@ -61,13 +61,13 @@ data class OrderDto(
             status = o.status,
             statusLabel = when (o.status) {
                 OrderStatus.PENDING      -> "Confirmation client"
-                OrderStatus.CONFIRMED    -> "ConfirmÃ©e"
-                OrderStatus.PREPARING    -> "En prÃ©paration"
-                OrderStatus.SHIPPED      -> "ExpÃ©dier"
-                OrderStatus.DELIVERED    -> "LivrÃ©e"
-                OrderStatus.PICKUP_READY -> "PrÃªt Ã  retirer"
-                OrderStatus.PICKED_UP    -> "RetirÃ©"
-                OrderStatus.CANCELLED    -> "AnnulÃ©e"
+                OrderStatus.CONFIRMED    -> "Confirmée"
+                OrderStatus.PREPARING    -> "En préparation"
+                OrderStatus.SHIPPED      -> "Expédiée"
+                OrderStatus.DELIVERED    -> "Livrée"
+                OrderStatus.PICKUP_READY -> "Prêt à retirer"
+                OrderStatus.PICKED_UP    -> "Retiré"
+                OrderStatus.CANCELLED    -> "Annulée"
             },
             deliveryMethod = o.deliveryMethod,
             deliveryAddress = o.deliveryAddress,
