@@ -34,6 +34,7 @@ class AdminController(
     private val walletService: WalletService,
 ) {
 
+    @PreAuthorize("hasAnyRole('SUPER_ADMIN','MANAGER','RECEPTION')")
     @GetMapping("/orders")
     @Transactional(readOnly = true)
     fun orders(
@@ -49,6 +50,7 @@ class AdminController(
             orderRepo.findAllByOrderByCreatedAtDesc(pageable).map { OrderDto.from(it) }
     }
 
+    @PreAuthorize("hasAnyRole('SUPER_ADMIN','MANAGER','RECEPTION')")
     @GetMapping("/orders/{id}")
     @Transactional(readOnly = true)
     fun orderDetail(@PathVariable id: UUID): OrderDto {
@@ -56,6 +58,7 @@ class AdminController(
         return OrderDto.from(order)
     }
 
+    @PreAuthorize("hasAnyRole('SUPER_ADMIN','MANAGER','RECEPTION')")
     @PatchMapping("/orders/{id}/status")
     fun updateOrderStatus(
         @PathVariable id: UUID,

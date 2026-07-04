@@ -1,4 +1,4 @@
-package tn.takeoff.config
+﻿package tn.takeoff.config
 
 import org.springframework.boot.context.properties.ConfigurationProperties
 
@@ -8,4 +8,5 @@ data class JwtProperties(
     val publicKeyPath: String,
     val accessTtlSeconds: Long,
     val refreshTtlSeconds: Long,
+    val adminAccessTtlSeconds: Long = 28800,   // 8 hours; override with JWT_ADMIN_ACCESS_TTL
 )
