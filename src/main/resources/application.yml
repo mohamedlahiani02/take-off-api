@@ -23,6 +23,7 @@
     enabled: true
     locations: classpath:db/migration
     baseline-on-migrate: true
+    repair-on-migrate: true
 
 server:
   port: ${PORT:8080}
