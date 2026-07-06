@@ -72,12 +72,12 @@ class OrderService(
         val hasPhysical = dto.items.any { it.productId != null }
         val timbreFiscal = if (hasPhysical && subtotal >= TIMBRE_THRESHOLD) TIMBRE_FISCAL else BigDecimal.ZERO
 
-        // Change B — Server-side delivery fee computation (ignore dto.deliveryFeeDt)
+        // Server-side delivery fee: 0 for PICKUP; 7 DT for Sfax (city == "sfax" or blank); 15 DT otherwise
         val deliveryFee = when (dto.deliveryMethod) {
             DeliveryMethod.PICKUP -> BigDecimal.ZERO
             DeliveryMethod.DELIVER -> {
                 val city = (dto.deliveryAddress?.get("city") ?: "").trim().lowercase()
-                if (city.isEmpty() || city == "tunis") BigDecimal("9.000") else BigDecimal("15.000")
+                if (city.isEmpty() || city == "sfax") BigDecimal("7.000") else BigDecimal("15.000")
             }
         }
 
