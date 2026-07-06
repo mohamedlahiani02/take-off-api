@@ -1,5 +1,6 @@
 ﻿package tn.takeoff.orders.dto
 
+import jakarta.validation.constraints.DecimalMin
 import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.NotEmpty
@@ -14,7 +15,7 @@ data class CartItemInput(
     @field:NotBlank val productName: String,
     @field:Min(1) val qty: Int = 1,
     val size: String? = null,
-    val unitPriceDt: BigDecimal,
+    @field:DecimalMin("0.001") val unitPriceDt: BigDecimal,
 )
 
 data class PlaceOrderRequest(
