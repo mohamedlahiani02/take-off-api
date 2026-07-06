@@ -103,6 +103,7 @@ class MemberClassController(
 
     @PostMapping("/bookings")
     @ResponseStatus(HttpStatus.CREATED)
+    @Transactional
     fun book(
         @Valid @RequestBody req: BookRequest,
         @AuthenticationPrincipal claims: JwtService.Claims,
