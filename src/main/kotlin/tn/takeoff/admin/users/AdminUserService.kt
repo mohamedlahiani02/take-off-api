@@ -63,14 +63,13 @@ class AdminUserService(
         }
         val id = UUID.randomUUID()
         val email = req.email?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
-            ?: "ghost-$id@ghost.takeoff.local"
-        if (users.existsByEmail(email)) {
+        if (email != null && users.existsByEmail(email)) {
             throw ConflictException("takeoff.user.email_taken", "Email already in use")
         }
         val user = User(
             id = id,
             email = email,
-            passwordHash = UNUSABLE_PASSWORD, // BCrypt rejects this → cannot log in until set
+            passwordHash = null,
             name = req.name.trim(),
             phone = phone,
             accountStatus = AccountStatus.GHOST,

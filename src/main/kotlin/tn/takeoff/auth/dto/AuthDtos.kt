@@ -26,6 +26,21 @@ data class LoginRequest(
     @field:NotBlank val password: String,
 )
 
+data class SendOtpRequest(
+    @field:NotBlank val phone: String,
+)
+
+data class VerifyOtpRequest(
+    @field:NotBlank val phone: String,
+    @field:NotBlank val code: String,
+    val name: String? = null,
+)
+
+data class SendOtpResponse(
+    val message: String,
+    val isNewUser: Boolean,
+)
+
 data class ForgotPasswordRequest(
     @field:NotBlank @field:Email val email: String,
 )
@@ -51,7 +66,7 @@ data class AuthResponse(
 
 data class UserDto(
     val id: UUID,
-    val email: String,
+    val email: String?,
     val name: String,
     val phone: String?,
     val tracks: List<String>,

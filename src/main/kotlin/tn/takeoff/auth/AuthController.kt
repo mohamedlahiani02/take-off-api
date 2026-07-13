@@ -19,6 +19,14 @@ class AuthController(private val authService: AuthService) {
     fun login(@Valid @RequestBody dto: LoginRequest): AuthResponse =
         authService.login(dto)
 
+    @PostMapping("/send-otp")
+    fun sendOtp(@Valid @RequestBody dto: SendOtpRequest): SendOtpResponse =
+        authService.sendOtp(dto)
+
+    @PostMapping("/verify-otp")
+    fun verifyOtp(@Valid @RequestBody dto: VerifyOtpRequest): AuthResponse =
+        authService.verifyOtp(dto)
+
     @PostMapping("/refresh")
     fun refresh(@Valid @RequestBody dto: RefreshRequest): TokenPair =
         authService.refresh(dto)

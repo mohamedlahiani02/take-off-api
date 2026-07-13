@@ -4,8 +4,10 @@ import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import tn.takeoff.auth.dto.*
+import tn.takeoff.common.errors.BadRequestException
 import tn.takeoff.common.errors.ConflictException
 import tn.takeoff.common.errors.UnauthorizedException
+import tn.takeoff.users.AccountStatus
 import tn.takeoff.users.User
 import tn.takeoff.users.UserGateway
 import java.security.MessageDigest
@@ -17,6 +19,7 @@ class AuthService(
     private val userRepo: UserGateway,
     private val refreshTokenRepo: RefreshTokenGateway,
     private val passwordResetTokenRepo: PasswordResetTokenGateway,
+    private val otpService: OtpService,
     private val jwtService: JwtService,
     private val passwordEncoder: PasswordEncoder,
 ) {
@@ -46,24 +49,58 @@ class AuthService(
     fun login(dto: LoginRequest): AuthResponse {
         val user = userRepo.findByPhone(normalizePhone(dto.phone))
             .orElseThrow { UnauthorizedException("takeoff.auth.invalid_credentials", "Invalid credentials") }
-        if (user.accountStatus == tn.takeoff.users.AccountStatus.BLOCKED) {
+        if (user.accountStatus == AccountStatus.BLOCKED) {
             throw UnauthorizedException("takeoff.auth.account_blocked", "Account is blocked")
         }
-        // GHOST (no real password yet) and DELETED accounts cannot authenticate.
-        if (user.accountStatus != tn.takeoff.users.AccountStatus.ACTIVE) {
+        if (user.accountStatus != AccountStatus.ACTIVE) {
             throw UnauthorizedException("takeoff.auth.invalid_credentials", "Invalid credentials")
         }
-        if (!passwordEncoder.matches(dto.password, user.passwordHash)) {
+        if (user.passwordHash == null || !passwordEncoder.matches(dto.password, user.passwordHash)) {
             throw UnauthorizedException("takeoff.auth.invalid_credentials", "Invalid credentials")
         }
         return issueAuth(user)
     }
 
-    /**
-     * Normalize a Tunisian phone to canonical +216XXXXXXXX form.
-     * Accepts inputs with spaces, a leading 00216/216, or bare 8 digits.
-     * Non-conforming input is returned trimmed (it simply won't match any stored phone).
-     */
+    @Transactional
+    fun sendOtp(dto: SendOtpRequest): SendOtpResponse {
+        val phone = normalizePhone(dto.phone)
+        otpService.sendOtp(phone)
+        val isNewUser = !userRepo.existsByPhone(phone)
+        return SendOtpResponse(
+            message = if (isNewUser) "Code sent. Welcome to Take Off!" else "Code sent.",
+            isNewUser = isNewUser,
+        )
+    }
+
+    @Transactional
+    fun verifyOtp(dto: VerifyOtpRequest): AuthResponse {
+        val phone = normalizePhone(dto.phone)
+        val valid = otpService.verifyCode(phone, dto.code)
+        if (!valid) {
+            throw BadRequestException("takeoff.otp.invalid", "Invalid or expired code")
+        }
+
+        val existing = userRepo.findByPhone(phone).orElse(null)
+        val user = if (existing != null) {
+            if (existing.accountStatus == AccountStatus.BLOCKED) {
+                throw UnauthorizedException("takeoff.auth.account_blocked", "Account is blocked")
+            }
+            existing
+        } else {
+            val name = dto.name?.trim()?.takeIf { it.isNotBlank() }
+                ?: throw BadRequestException("takeoff.auth.name_required", "Name is required for new accounts")
+            val newUser = User(
+                email = null,
+                passwordHash = null,
+                name = name,
+                phone = phone,
+            )
+            userRepo.save(newUser)
+        }
+
+        return issueAuth(user)
+    }
+
     private fun normalizePhone(input: String): String {
         var digits = input.trim().replace(Regex("[\\s-]"), "")
         digits = digits.removePrefix("+")
@@ -83,7 +120,6 @@ class AuthService(
             throw UnauthorizedException("takeoff.auth.refresh_expired", "Refresh token expired")
         }
 
-        // rotate: delete old, issue new
         refreshTokenRepo.delete(stored)
         val claims = JwtService.Claims(stored.user.id, stored.user.email, stored.user.name, stored.user.role)
         val newAccess = jwtService.issueAccessToken(claims)
@@ -111,10 +147,10 @@ class AuthService(
         dto.phone?.let { user.phone = it }
         dto.tracks?.let { user.tracks = it.toTypedArray() }
         if (dto.currentPassword != null && dto.newPassword != null) {
-            if (!passwordEncoder.matches(dto.currentPassword, user.passwordHash))
+            if (user.passwordHash == null || !passwordEncoder.matches(dto.currentPassword, user.passwordHash))
                 throw UnauthorizedException("takeoff.auth.wrong_password", "Current password is incorrect")
             if (dto.newPassword.length < 8)
-                throw tn.takeoff.common.errors.BadRequestException("takeoff.auth.weak_password", "Password must be at least 8 characters")
+                throw BadRequestException("takeoff.auth.weak_password", "Password must be at least 8 characters")
             user.passwordHash = passwordEncoder.encode(dto.newPassword)
         }
         user.updatedAt = Instant.now()
@@ -123,14 +159,12 @@ class AuthService(
 
     @Transactional
     fun forgotPassword(dto: ForgotPasswordRequest) {
-        val user = userRepo.findByEmail(dto.email.trim().lowercase()).orElse(null)
-            ?: return  // silent — don't reveal whether the email exists
+        val user = userRepo.findByEmail(dto.email.trim().lowercase()).orElse(null) ?: return
         passwordResetTokenRepo.deleteAllByUserId(user.id)
         val raw = UUID.randomUUID().toString()
         passwordResetTokenRepo.save(
             PasswordResetToken(user = user, tokenHash = sha256(raw), expiresAt = Instant.now().plusSeconds(3600))
         )
-        // TODO: send email with reset link — wire up SMTP provider when purchased
     }
 
     @Transactional
@@ -159,7 +193,7 @@ class AuthService(
         val entity = RefreshToken(
             user = user,
             tokenHash = sha256(raw),
-            expiresAt = Instant.now().plusSeconds(604800L * 4), // 28 days
+            expiresAt = Instant.now().plusSeconds(604800L * 4),
         )
         return raw to entity
     }
