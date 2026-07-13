@@ -48,3 +48,8 @@ takeoff:
     refresh-ttl-seconds: ${JWT_REFRESH_TTL:604800}
   cors:
     allowed-origins: ${FRONTEND_URL:http://localhost:3000}
+  sms:
+    enabled: ${SMS_ENABLED:false}
+    twilio-sid: ${TWILIO_ACCOUNT_SID:}
+    twilio-token: ${TWILIO_AUTH_TOKEN:}
+    from-number: ${TWILIO_FROM_NUMBER:}

@@ -52,19 +52,19 @@ class JwtService(private val props: JwtProperties) {
         return Base64.getMimeDecoder().decode(cleaned)
     }
 
-    data class Claims(val userId: UUID, val email: String, val name: String, val role: UserRole)
+    data class Claims(val userId: UUID, val email: String?, val name: String, val role: UserRole)
 
     fun issueAccessToken(claims: Claims): String {
         val now = Instant.now()
-        return JWT.create()
+        val builder = JWT.create()
             .withIssuer("takeoff")
             .withSubject(claims.userId.toString())
-            .withClaim("email", claims.email)
             .withClaim("name", claims.name)
             .withClaim("role", claims.role.name)
             .withIssuedAt(Date.from(now))
             .withExpiresAt(Date.from(now.plusSeconds(props.accessTtlSeconds)))
-            .sign(algorithm)
+        claims.email?.let { builder.withClaim("email", it) }
+        return builder.sign(algorithm)
     }
 
     fun issueRefreshToken(): String = UUID.randomUUID().toString() + UUID.randomUUID().toString()

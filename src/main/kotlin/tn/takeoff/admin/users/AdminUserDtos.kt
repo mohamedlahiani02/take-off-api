@@ -27,7 +27,7 @@ data class UserSummaryDto(
             id = u.id,
             name = u.name,
             phone = u.phone,
-            email = if (u.email.endsWith("@ghost.takeoff.local")) null else u.email,
+            email = u.email?.takeUnless { it.endsWith("@ghost.takeoff.local") },
             accountStatus = u.accountStatus,
             role = u.role,
             walletDt = u.walletDt,

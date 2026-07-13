@@ -17,11 +17,11 @@ class User(
     @Id
     val id: UUID = UUID.randomUUID(),
 
-    @Column(unique = true, nullable = false)
-    var email: String,
+    @Column(unique = true, nullable = true)
+    var email: String?,
 
-    @Column(name = "password_hash", nullable = false)
-    var passwordHash: String,
+    @Column(name = "password_hash", nullable = true)
+    var passwordHash: String?,
 
     @Column(nullable = false)
     var name: String,
