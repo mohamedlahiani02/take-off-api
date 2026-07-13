@@ -12,9 +12,8 @@ import java.util.logging.Logger
 class OtpService(
     private val phoneOtpRepo: PhoneOtpGateway,
     @Value("\${takeoff.sms.enabled:false}") private val smsEnabled: Boolean,
-    @Value("\${takeoff.sms.twilio-sid:}") private val twilioSid: String,
-    @Value("\${takeoff.sms.twilio-token:}") private val twilioToken: String,
-    @Value("\${takeoff.sms.from-number:}") private val fromNumber: String,
+    @Value("\${takeoff.sms.brevo-api-key:}") private val brevoApiKey: String,
+    @Value("\${takeoff.sms.sender:TakeOff}") private val sender: String,
 ) {
     private val log = Logger.getLogger(OtpService::class.java.name)
 
@@ -34,8 +33,8 @@ class OtpService(
         )
         phoneOtpRepo.save(otp)
 
-        if (smsEnabled && twilioSid.isNotBlank()) {
-            sendViaTwilio(phone, code)
+        if (smsEnabled && brevoApiKey.isNotBlank()) {
+            sendViaBrevo(phone, code)
         } else {
             log.info("OTP for $phone: $code")
         }
@@ -51,25 +50,26 @@ class OtpService(
         return true
     }
 
-    private fun sendViaTwilio(to: String, code: String) {
+    private fun sendViaBrevo(to: String, code: String) {
         try {
-            val url = "https://api.twilio.com/2010-04-01/Accounts/$twilioSid/Messages.json"
-            val body = "To=${encode(to)}&From=${encode(fromNumber)}&Body=${encode("Your Take Off code: $code")}"
-            val creds = java.util.Base64.getEncoder().encodeToString("$twilioSid:$twilioToken".toByteArray())
-            val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+            val body = """{"sender":"$sender","recipient":"$to","content":"Your Take Off verification code: $code. Valid for 10 minutes."}"""
+            val url = java.net.URL("https://api.brevo.com/v3/transactionalSMS/sms")
+            val conn = url.openConnection() as java.net.HttpURLConnection
             conn.requestMethod = "POST"
-            conn.setRequestProperty("Authorization", "Basic $creds")
-            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+            conn.setRequestProperty("api-key", brevoApiKey)
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.setRequestProperty("Accept", "application/json")
             conn.doOutput = true
-            conn.outputStream.write(body.toByteArray())
+            conn.outputStream.write(body.toByteArray(Charsets.UTF_8))
             val status = conn.responseCode
-            if (status != 201) log.warning("Twilio returned $status for $to")
+            if (status !in 200..299) {
+                val err = conn.errorStream?.bufferedReader()?.readText() ?: ""
+                log.warning("Brevo SMS failed ($status): $err")
+            }
         } catch (e: Exception) {
-            log.warning("Twilio send failed: ${e.message}")
+            log.warning("Brevo SMS error: ${e.message}")
         }
     }
-
-    private fun encode(s: String) = java.net.URLEncoder.encode(s, "UTF-8")
 
     private fun sha256(input: String): String {
         val digest = MessageDigest.getInstance("SHA-256")
