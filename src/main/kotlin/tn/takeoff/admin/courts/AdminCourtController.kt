@@ -27,6 +27,13 @@ class AdminCourtController(private val service: AdminCourtService) {
         @AuthenticationPrincipal admin: JwtService.AdminClaims,
     ): BookingDto = service.createBooking(req, admin.adminId)
 
+    /** C-09: update payment status. */
+    @PatchMapping("/bookings/{id}/payment")
+    fun updatePaymentStatus(
+        @PathVariable id: UUID,
+        @RequestBody dto: UpdatePaymentStatusRequest,
+    ): BookingDto = service.updatePaymentStatus(id, dto)
+
     /** C-05: cancel. */
     @PostMapping("/bookings/{id}/cancel")
     fun cancel(
