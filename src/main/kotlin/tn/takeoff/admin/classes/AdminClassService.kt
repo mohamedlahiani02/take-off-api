@@ -6,6 +6,7 @@ import tn.takeoff.admin.audit.AuditService
 import tn.takeoff.admin.users.AdminUserService
 import tn.takeoff.admin.users.CreateGhostRequest
 import tn.takeoff.classes.*
+import tn.takeoff.coaches.CoachRepository
 import tn.takeoff.packs.CreditEntryType
 import tn.takeoff.packs.PackCreditLedger
 import tn.takeoff.packs.PackCreditLedgerRepository
@@ -14,8 +15,22 @@ import tn.takeoff.packs.UserPackStatus
 import tn.takeoff.common.errors.BadRequestException
 import tn.takeoff.common.errors.ConflictException
 import tn.takeoff.common.errors.NotFoundException
+import java.math.BigDecimal
 import java.time.Instant
 import java.util.UUID
+
+data class ClassBookingHistoryDto(
+    val id: UUID,
+    val className: String,
+    val level: String?,
+    val startsAt: Instant,
+    val durationMin: Int,
+    val instructorName: String?,
+    val status: String,
+    val priceDt: BigDecimal,
+    val paidWith: String,
+    val createdAt: Instant,
+)
 
 data class SessionDetail(
     val session: ClassSession,
@@ -33,6 +48,7 @@ class AdminClassService(
     private val ledger: PackCreditLedgerRepository,
     private val adminUserService: AdminUserService,
     private val auditService: AuditService,
+    private val coaches: CoachRepository,
 ) {
 
     // ── class types ──
@@ -175,6 +191,37 @@ class AdminClassService(
         bookings.save(b)
         auditService.log(adminId, "class.attendance", "class_booking", bookingId.toString(), mapOf("status" to status.name))
         return b
+    }
+
+    fun classHistoryForUser(userId: UUID): List<ClassBookingHistoryDto> {
+        val typeCache = mutableMapOf<UUID, ClassType>()
+        val sessionCache = mutableMapOf<UUID, ClassSession>()
+        val coachCache = mutableMapOf<UUID, String>()
+        return bookings.findByUserIdOrderByCreatedAtDesc(userId).map { b ->
+            val session = sessionCache.getOrPut(b.sessionId) {
+                sessions.findById(b.sessionId).orElse(null)
+            } ?: return@map null
+            val classType = typeCache.getOrPut(session.classTypeId) {
+                types.findById(session.classTypeId).orElse(null)
+            } ?: return@map null
+            val instructorName = session.instructorId?.let { iid ->
+                coachCache.getOrPut(iid) {
+                    coaches.findById(iid).map { c -> "${c.firstName} ${c.lastName}" }.orElse(null) ?: ""
+                }.takeIf { it.isNotEmpty() }
+            }
+            ClassBookingHistoryDto(
+                id = b.id,
+                className = classType.name,
+                level = classType.level,
+                startsAt = session.startsAt,
+                durationMin = session.durationMin,
+                instructorName = instructorName,
+                status = b.status.name,
+                priceDt = b.priceDt,
+                paidWith = b.paidWith.name,
+                createdAt = b.createdAt,
+            )
+        }.filterNotNull()
     }
 }
 

@@ -10,6 +10,7 @@ import tn.takeoff.common.errors.ConflictException
 import tn.takeoff.common.errors.NotFoundException
 import tn.takeoff.courts.BookingMode
 import tn.takeoff.courts.BookingStatus
+import tn.takeoff.courts.CourtActivity
 import tn.takeoff.courts.CourtBlock
 import tn.takeoff.courts.CourtBlockRepository
 import tn.takeoff.courts.CourtBooking
@@ -41,19 +42,22 @@ class AdminCourtService(
     /** C-02/03/04: book on behalf of an existing or freshly-created ghost user. */
     @Transactional
     fun createBooking(req: CreateBookingRequest, adminId: UUID): BookingDto {
-        if (req.endsAt <= req.startsAt) {
+        val court = courts.findById(req.courtId).orElseThrow { NotFoundException("court", req.courtId) }
+        val endsAt = if (court.activity == CourtActivity.PADEL)
+            req.startsAt.plusSeconds(5400) // padel is always fixed 90 minutes
+        else req.endsAt
+        if (endsAt <= req.startsAt) {
             throw BadRequestException("takeoff.booking.bad_time", "End must be after start")
         }
-        courts.findById(req.courtId).orElseThrow { NotFoundException("court", req.courtId) }
 
         val userId = resolveUser(req, adminId)
-        assertSlotFree(req.courtId, req.startsAt, req.endsAt, req.mode, excludeBookingId = null)
+        assertSlotFree(req.courtId, req.startsAt, endsAt, req.mode, excludeBookingId = null)
 
         val booking = CourtBooking(
             courtId = req.courtId,
             userId = userId,
             startsAt = req.startsAt,
-            endsAt = req.endsAt,
+            endsAt = endsAt,
             mode = req.mode,
             priceDt = req.priceDt,
             paymentStatus = req.paymentStatus,
@@ -145,6 +149,23 @@ class AdminCourtService(
         val block = blocks.findById(id).orElseThrow { NotFoundException("court_block", id) }
         blocks.delete(block)
         auditService.log(adminId, "court.unblock", "court_block", id.toString())
+    }
+
+    fun courtHistoryForUser(userId: UUID): List<CourtBookingHistoryDto> {
+        val courtNames = courts.findAll().associate { it.id to it.name }
+        return bookings.findByUserIdOrderByStartsAtDesc(userId).map { b ->
+            CourtBookingHistoryDto(
+                id = b.id,
+                courtName = courtNames[b.courtId] ?: b.courtId.toString(),
+                startsAt = b.startsAt,
+                endsAt = b.endsAt,
+                mode = b.mode.name,
+                priceDt = b.priceDt,
+                paymentStatus = b.paymentStatus.name,
+                status = b.status.name,
+                createdAt = b.createdAt,
+            )
+        }
     }
 
     // ── helpers ──
