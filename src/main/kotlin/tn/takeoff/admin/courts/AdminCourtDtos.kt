@@ -30,6 +30,7 @@ data class BookingDto(
     val id: UUID,
     val courtId: UUID,
     val userId: UUID?,
+    val userName: String?,
     val startsAt: Instant,
     val endsAt: Instant,
     val mode: BookingMode,
@@ -40,8 +41,8 @@ data class BookingDto(
     val cancelReason: String?,
 ) {
     companion object {
-        fun from(b: CourtBooking) = BookingDto(
-            id = b.id, courtId = b.courtId, userId = b.userId,
+        fun from(b: CourtBooking, userName: String? = null) = BookingDto(
+            id = b.id, courtId = b.courtId, userId = b.userId, userName = userName,
             startsAt = b.startsAt, endsAt = b.endsAt, mode = b.mode,
             priceDt = b.priceDt, paymentStatus = b.paymentStatus,
             paymentMethod = b.paymentMethod, status = b.status, cancelReason = b.cancelReason,
@@ -112,6 +113,9 @@ data class CreateBlockRequest(
     val recurringDow: Int? = null,
     val recurringUntil: LocalDate? = null,
 )
+
+/** C-09: update payment status on an existing booking. */
+data class UpdatePaymentStatusRequest(val paymentStatus: CourtPaymentStatus)
 
 /** History entry for a court booking, returned in user profile. */
 data class CourtBookingHistoryDto(

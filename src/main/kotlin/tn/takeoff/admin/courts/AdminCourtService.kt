@@ -17,6 +17,7 @@ import tn.takeoff.courts.CourtBooking
 import tn.takeoff.courts.CourtBookingRepository
 import tn.takeoff.courts.CourtPaymentStatus
 import tn.takeoff.courts.CourtRepository
+import tn.takeoff.users.UserRepository
 import tn.takeoff.users.WalletEntryType
 import tn.takeoff.users.WalletService
 import java.time.Instant
@@ -28,16 +29,23 @@ class AdminCourtService(
     private val bookings: CourtBookingRepository,
     private val blocks: CourtBlockRepository,
     private val adminUserService: AdminUserService,
+    private val userRepo: UserRepository,
     private val walletService: WalletService,
     private val auditService: AuditService,
 ) {
 
-    /** C-01: calendar window [from, to). */
-    fun calendar(from: Instant, to: Instant): CalendarDto = CalendarDto(
-        courts = courts.findByActiveOrderByDisplayOrder(true).map(CourtDto::from),
-        bookings = bookings.findByStartsAtGreaterThanEqualAndStartsAtLessThan(from, to).map(BookingDto::from),
-        blocks = blocks.findByStartsAtGreaterThanEqualAndStartsAtLessThan(from, to).map(BlockDto::from),
-    )
+    /** C-01: calendar window [from, to). Bookings include userName for display. */
+    fun calendar(from: Instant, to: Instant): CalendarDto {
+        val calBookings = bookings.findByStartsAtGreaterThanEqualAndStartsAtLessThan(from, to)
+        val userIds = calBookings.mapNotNull { it.userId }.toSet()
+        val userNames = if (userIds.isEmpty()) emptyMap()
+        else userRepo.findAllById(userIds).associate { it.id to it.name }
+        return CalendarDto(
+            courts = courts.findByActiveOrderByDisplayOrder(true).map(CourtDto::from),
+            bookings = calBookings.map { BookingDto.from(it, userNames[it.userId]) },
+            blocks = blocks.findByStartsAtGreaterThanEqualAndStartsAtLessThan(from, to).map(BlockDto::from),
+        )
+    }
 
     /** C-02/03/04: book on behalf of an existing or freshly-created ghost user. */
     @Transactional
@@ -149,6 +157,17 @@ class AdminCourtService(
         val block = blocks.findById(id).orElseThrow { NotFoundException("court_block", id) }
         blocks.delete(block)
         auditService.log(adminId, "court.unblock", "court_block", id.toString())
+    }
+
+    /** C-09: update the payment status on an existing booking. */
+    @Transactional
+    fun updatePaymentStatus(id: UUID, dto: UpdatePaymentStatusRequest): BookingDto {
+        val b = bookings.findById(id).orElseThrow { NotFoundException("court_booking", id) }
+        b.paymentStatus = dto.paymentStatus
+        b.updatedAt = Instant.now()
+        bookings.save(b)
+        val userName = b.userId?.let { uid -> userRepo.findById(uid).orElse(null)?.name }
+        return BookingDto.from(b, userName)
     }
 
     fun courtHistoryForUser(userId: UUID): List<CourtBookingHistoryDto> {
