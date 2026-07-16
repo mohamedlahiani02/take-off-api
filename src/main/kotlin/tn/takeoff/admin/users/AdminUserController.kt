@@ -5,6 +5,10 @@ import org.springframework.data.domain.Page
 import org.springframework.security.access.prepost.PreAuthorize
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.*
+import tn.takeoff.admin.classes.AdminClassService
+import tn.takeoff.admin.classes.ClassBookingHistoryDto
+import tn.takeoff.admin.courts.AdminCourtService
+import tn.takeoff.admin.courts.CourtBookingHistoryDto
 import tn.takeoff.auth.JwtService
 import tn.takeoff.users.AccountStatus
 import java.util.UUID
@@ -12,7 +16,11 @@ import java.util.UUID
 @RestController
 @RequestMapping("/api/v1/admin/users")
 @PreAuthorize("hasAnyRole('SUPER_ADMIN','MANAGER','RECEPTION')")
-class AdminUserController(private val service: AdminUserService) {
+class AdminUserController(
+    private val service: AdminUserService,
+    private val courtService: AdminCourtService,
+    private val classService: AdminClassService,
+) {
 
     /** B-01: instant search by phone / name / email. */
     @GetMapping("/search")
@@ -81,4 +89,12 @@ class AdminUserController(private val service: AdminUserService) {
         @PathVariable id: UUID,
         @AuthenticationPrincipal admin: JwtService.AdminClaims,
     ) = service.softDelete(id, admin.adminId)
+
+    @GetMapping("/{id}/court-bookings")
+    fun courtHistory(@PathVariable id: UUID): List<CourtBookingHistoryDto> =
+        courtService.courtHistoryForUser(id)
+
+    @GetMapping("/{id}/class-bookings")
+    fun classHistory(@PathVariable id: UUID): List<ClassBookingHistoryDto> =
+        classService.classHistoryForUser(id)
 }

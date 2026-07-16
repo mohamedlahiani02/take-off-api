@@ -112,3 +112,16 @@ data class CreateBlockRequest(
     val recurringDow: Int? = null,
     val recurringUntil: LocalDate? = null,
 )
+
+/** History entry for a court booking, returned in user profile. */
+data class CourtBookingHistoryDto(
+    val id: UUID,
+    val courtName: String,
+    val startsAt: Instant,
+    val endsAt: Instant,
+    val mode: String,
+    val priceDt: BigDecimal,
+    val paymentStatus: String,
+    val status: String,
+    val createdAt: Instant,
+)
