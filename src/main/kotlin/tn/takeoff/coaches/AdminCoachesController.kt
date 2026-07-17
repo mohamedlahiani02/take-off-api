@@ -7,17 +7,19 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.multipart.MultipartFile
 import tn.takeoff.auth.JwtService
+import tn.takeoff.cms.MediaUploadService
 import tn.takeoff.coaches.dto.CoachDto
 import tn.takeoff.coaches.dto.CreateCoachRequest
 import tn.takeoff.coaches.dto.UpdateCoachRequest
-import java.nio.file.Files
-import java.nio.file.Paths
 import java.util.UUID
 
 @RestController
 @RequestMapping("/api/v1/admin/coaches")
 @PreAuthorize("hasAnyRole('SUPER_ADMIN','MANAGER')")
-class AdminCoachesController(private val service: CoachService) {
+class AdminCoachesController(
+    private val service: CoachService,
+    private val mediaUpload: MediaUploadService,
+) {
 
     @GetMapping
     fun list(): List<CoachDto> = service.listAll()
@@ -50,19 +52,14 @@ class AdminCoachesController(private val service: CoachService) {
         @AuthenticationPrincipal claims: JwtService.AdminClaims,
     ) = service.reorder(ids, claims.adminId)
 
+    /** Uploads coach photo to Cloudinary (permanent CDN) instead of local disk. */
     @PostMapping("/{id}/photo")
     fun uploadPhoto(
         @PathVariable id: UUID,
         @RequestParam("file") file: MultipartFile,
         @AuthenticationPrincipal claims: JwtService.AdminClaims,
     ): CoachDto {
-        val dir = System.getenv("COACH_PHOTOS_DIR") ?: "uploads/coaches"
-        val uploadDir = Paths.get(dir)
-        Files.createDirectories(uploadDir)
-        val extension = file.originalFilename?.substringAfterLast('.', "jpg") ?: "jpg"
-        val filename = "$id.$extension"
-        file.transferTo(uploadDir.resolve(filename))
-        val photoUrl = "/uploads/coaches/$filename"
-        return service.updatePhoto(id, photoUrl, claims.adminId)
+        val asset = mediaUpload.upload(file, "coaches", claims.adminId)
+        return service.updatePhoto(id, asset.url, claims.adminId)
     }
 }
