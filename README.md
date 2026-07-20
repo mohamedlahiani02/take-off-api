@@ -36,11 +36,11 @@ scripts/gen-keys.sh        # writes keys/private.pem and keys/public.pem
 ### 2. Configure environment
 
 ```bash
-cp .env.example .env       # set DATABASE_URL, JWT_*_KEY_PATH, FRONTEND_URL, …
+cp .env.example .env       # set DATABASE_URL, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, CLOUDINARY_URL, …
 ```
 
 Secrets (DB credentials, JWT keys) are supplied via environment variables only — **never commit
-them**. In production, Railway injects `DATABASE_URL`.
+them**. In production, the host (Render) injects `DATABASE_URL` and the JWT keys.
 
 ### 3. Run
 
@@ -66,14 +66,14 @@ Flyway applies pending migrations from `src/main/resources/db/migration` on star
 
 ```
 src/main/kotlin/tn/takeoff/
-├── auth          # JWT issue/verify, login, refresh, password reset
+├── auth          # JWT issue/verify, login, refresh, OTP, password reset
 ├── users         # member profile / identity
 ├── wallet        # TND credit ledger
 ├── products      # catalog + variants
 ├── orders        # cart checkout → orders, status lifecycle
 ├── courts        # padel courts, availability, blocks, bookings
-├── classes       # pilates schedule + packs
-├── coaches       # public coach profiles
+├── classes       # pilates schedule, bookings + packs
+├── coaches       # public coach profiles + photo upload (Cloudinary)
 ├── coaching      # coaching-inquiry funnel (lead capture)
 ├── packs         # credit packs
 ├── payments      # Konnect payment intents + webhook fulfillment
@@ -83,9 +83,14 @@ src/main/kotlin/tn/takeoff/
 ├── config        # security, JWT props, web/CORS, env diagnostics
 └── admin         # staff-facing management endpoints (per domain)
 
-src/main/resources/db/migration/   # Flyway V1__… … V20__…
+src/main/resources/db/migration/   # Flyway V1__… … V32__…
 ```
 
 ## Environment variables
 
 See [.env.example](.env.example) for the full list with descriptions.
+
+## Deployment
+
+The app is containerised. Push to `main` triggers an automatic rebuild and redeploy on Render.
+Flyway runs all pending migrations on startup — no manual schema management needed.
