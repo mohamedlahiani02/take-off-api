@@ -15,8 +15,13 @@ import tn.takeoff.courts.CourtBlock
 import tn.takeoff.courts.CourtBlockRepository
 import tn.takeoff.courts.CourtBooking
 import tn.takeoff.courts.CourtBookingRepository
+import tn.takeoff.courts.CourtBookingPlayer
+import tn.takeoff.courts.CourtBookingPlayerRepository
+import tn.takeoff.courts.CourtPaymentMethod
 import tn.takeoff.courts.CourtPaymentStatus
 import tn.takeoff.courts.CourtRepository
+import tn.takeoff.courts.PlayerPaymentMethod
+import tn.takeoff.courts.PlayerPaymentStatus
 import tn.takeoff.users.UserRepository
 import tn.takeoff.users.WalletEntryType
 import tn.takeoff.users.WalletService
@@ -28,23 +33,35 @@ class AdminCourtService(
     private val courts: CourtRepository,
     private val bookings: CourtBookingRepository,
     private val blocks: CourtBlockRepository,
+    private val players: CourtBookingPlayerRepository,
     private val adminUserService: AdminUserService,
     private val userRepo: UserRepository,
     private val walletService: WalletService,
     private val auditService: AuditService,
 ) {
 
-    /** C-01: calendar window [from, to). Bookings include userName for display. */
+    /** C-01: calendar window [from, to). Bookings carry participants + derived payment state. */
     fun calendar(from: Instant, to: Instant): CalendarDto {
         val calBookings = bookings.findByStartsAtGreaterThanEqualAndStartsAtLessThan(from, to)
-        val userIds = calBookings.mapNotNull { it.userId }.toSet()
+        val playersByBooking = if (calBookings.isEmpty()) emptyMap()
+        else players.findByBookingIdIn(calBookings.map { it.id }).groupBy { it.bookingId }
+        val userIds = calBookings.mapNotNull { it.userId }.toSet() +
+            playersByBooking.values.flatten().map { it.userId }
         val userNames = if (userIds.isEmpty()) emptyMap()
         else userRepo.findAllById(userIds).associate { it.id to it.name }
         return CalendarDto(
             courts = courts.findByActiveOrderByDisplayOrder(true).map(CourtDto::from),
-            bookings = calBookings.map { BookingDto.from(it, userNames[it.userId]) },
+            bookings = calBookings.map {
+                BookingDto.from(it, userNames[it.userId], playersByBooking[it.id] ?: emptyList(), userNames)
+            },
             blocks = blocks.findByStartsAtGreaterThanEqualAndStartsAtLessThan(from, to).map(BlockDto::from),
         )
+    }
+
+    /** P-00: one booking with its participant slots. */
+    fun bookingDetail(id: UUID): BookingDto {
+        val b = bookings.findById(id).orElseThrow { NotFoundException("court_booking", id) }
+        return dtoWithPlayers(b)
     }
 
     /** C-02/03/04: book on behalf of an existing or freshly-created ghost user. */
@@ -73,8 +90,129 @@ class AdminCourtService(
             createdByAdminId = adminId,
         )
         bookings.save(booking)
+
+        // The organizer is always participant #1; their tranche mirrors the booking payment.
+        val organizer = CourtBookingPlayer(
+            bookingId = booking.id,
+            userId = userId,
+            shareDt = req.priceDt,
+            paymentStatus = if (req.paymentStatus == CourtPaymentStatus.PAID)
+                PlayerPaymentStatus.PAID else PlayerPaymentStatus.PENDING,
+            paymentMethod = req.paymentMethod?.toPlayerMethod(),
+            paidAt = if (req.paymentStatus == CourtPaymentStatus.PAID) Instant.now() else null,
+            addedByAdminId = adminId,
+        )
+        players.save(organizer)
+
         auditService.log(adminId, "court.book", "court_booking", booking.id.toString())
-        return BookingDto.from(booking)
+        return dtoWithPlayers(booking)
+    }
+
+    // ── participants (Epic 1) ──
+
+    /** P-01: attach a member (existing or created inline) to an open slot. */
+    @Transactional
+    fun addParticipant(bookingId: UUID, req: AddParticipantRequest, adminId: UUID): BookingDto {
+        val b = bookings.findById(bookingId).orElseThrow { NotFoundException("court_booking", bookingId) }
+        if (b.status == BookingStatus.CANCELLED) {
+            throw ConflictException("takeoff.booking.cancelled", "Booking is cancelled")
+        }
+        val existing = players.findByBookingId(bookingId)
+        val maxSlots = if (b.mode == BookingMode.SHARE) BookingDto.SHARE_SLOTS else 1
+        if (existing.size >= maxSlots) {
+            throw ConflictException("takeoff.booking.match_full", "All $maxSlots player slots are taken")
+        }
+        val userId = when {
+            req.userId != null -> req.userId
+            !req.newMemberName.isNullOrBlank() && !req.newMemberPhone.isNullOrBlank() ->
+                adminUserService.createGhost(CreateGhostRequest(req.newMemberName, req.newMemberPhone), adminId).id
+            else -> throw BadRequestException(
+                "takeoff.participant.no_user",
+                "Provide an existing userId or newMemberName + newMemberPhone",
+            )
+        }
+        if (players.existsByBookingIdAndUserId(bookingId, userId)) {
+            throw ConflictException("takeoff.participant.duplicate", "This member is already in the match")
+        }
+        val share = req.shareDt ?: b.priceDt
+        players.save(CourtBookingPlayer(
+            bookingId = bookingId, userId = userId, shareDt = share, addedByAdminId = adminId,
+        ))
+        auditService.log(adminId, "court.participant_add", "court_booking", bookingId.toString(),
+            mapOf("userId" to userId.toString()))
+        return dtoWithPlayers(b)
+    }
+
+    /** P-02: settle / adjust one tranche; WALLET method actually debits the wallet. */
+    @Transactional
+    fun updateParticipant(bookingId: UUID, participantId: UUID, req: UpdateParticipantRequest, adminId: UUID): BookingDto {
+        val b = bookings.findById(bookingId).orElseThrow { NotFoundException("court_booking", bookingId) }
+        val p = players.findById(participantId)
+            .filter { it.bookingId == bookingId }
+            .orElseThrow { NotFoundException("court_booking_player", participantId) }
+
+        if (req.paymentStatus != null && req.paymentStatus != p.paymentStatus) {
+            if (req.paymentStatus == PlayerPaymentStatus.PAID) {
+                if (req.paymentMethod == PlayerPaymentMethod.WALLET) {
+                    walletService.apply(
+                        userId = p.userId, delta = p.shareDt.negate(), type = WalletEntryType.PAYMENT,
+                        reason = "Court booking share", adminId = adminId,
+                        refType = "court_booking_player", refId = p.id.toString(),
+                    )
+                }
+                p.paymentMethod = req.paymentMethod
+                p.paidAt = Instant.now()
+            } else {
+                p.paidAt = null
+                p.paymentMethod = null
+            }
+            p.paymentStatus = req.paymentStatus
+        }
+        if (req.noShow != null) p.noShow = req.noShow
+        p.updatedAt = Instant.now()
+        players.save(p)
+
+        syncBookingPaymentState(b)
+        auditService.log(adminId, "court.participant_update", "court_booking_player", p.id.toString(),
+            mapOf("status" to p.paymentStatus.name, "noShow" to p.noShow))
+        return dtoWithPlayers(b)
+    }
+
+    /** P-03: detach a participant (their tranche slot reopens — US-2.5 admin side). */
+    @Transactional
+    fun removeParticipant(bookingId: UUID, participantId: UUID, adminId: UUID): BookingDto {
+        val b = bookings.findById(bookingId).orElseThrow { NotFoundException("court_booking", bookingId) }
+        val p = players.findById(participantId)
+            .filter { it.bookingId == bookingId }
+            .orElseThrow { NotFoundException("court_booking_player", participantId) }
+        if (p.userId == b.userId) {
+            throw ConflictException("takeoff.participant.organizer", "The organizer cannot be removed — cancel the booking instead")
+        }
+        players.delete(p)
+        syncBookingPaymentState(b)
+        auditService.log(adminId, "court.participant_remove", "court_booking_player", participantId.toString())
+        return dtoWithPlayers(b)
+    }
+
+    /** P-04 / US-1.5: organizer covers the remaining tranches — booking becomes fully paid. */
+    @Transactional
+    fun organizerCoversAll(bookingId: UUID, adminId: UUID): BookingDto {
+        val b = bookings.findById(bookingId).orElseThrow { NotFoundException("court_booking", bookingId) }
+        if (b.status == BookingStatus.CANCELLED) {
+            throw ConflictException("takeoff.booking.cancelled", "Booking is cancelled")
+        }
+        players.findByBookingId(bookingId).forEach { p ->
+            if (p.userId != b.userId && p.paymentStatus == PlayerPaymentStatus.PENDING) {
+                p.paymentStatus = PlayerPaymentStatus.COVERED
+                p.updatedAt = Instant.now()
+                players.save(p)
+            }
+        }
+        b.paymentStatus = CourtPaymentStatus.PAID
+        b.updatedAt = Instant.now()
+        bookings.save(b)
+        auditService.log(adminId, "court.cover_all", "court_booking", bookingId.toString())
+        return dtoWithPlayers(b)
     }
 
     /** C-05: cancel with optional wallet refund. */
@@ -106,7 +244,7 @@ class AdminCourtService(
             adminId, "court.cancel", "court_booking", id.toString(),
             mapOf("reason" to req.reason, "refunded" to req.refundToWallet),
         )
-        return BookingDto.from(b)
+        return dtoWithPlayers(b)
     }
 
     /** C-06: reschedule to a new slot. */
@@ -128,7 +266,7 @@ class AdminCourtService(
         b.updatedAt = Instant.now()
         bookings.save(b)
         auditService.log(adminId, "court.reschedule", "court_booking", id.toString())
-        return BookingDto.from(b)
+        return dtoWithPlayers(b)
     }
 
     /** C-07/08: create a (optionally recurring) block. */
@@ -166,8 +304,7 @@ class AdminCourtService(
         b.paymentStatus = dto.paymentStatus
         b.updatedAt = Instant.now()
         bookings.save(b)
-        val userName = b.userId?.let { uid -> userRepo.findById(uid).orElse(null)?.name }
-        return BookingDto.from(b, userName)
+        return dtoWithPlayers(b)
     }
 
     fun courtHistoryForUser(userId: UUID): List<CourtBookingHistoryDto> {
@@ -188,6 +325,37 @@ class AdminCourtService(
     }
 
     // ── helpers ──
+
+    /** Booking DTO with participant rows + display names resolved. */
+    private fun dtoWithPlayers(b: CourtBooking): BookingDto {
+        val ps = players.findByBookingId(b.id)
+        val ids = (ps.map { it.userId } + listOfNotNull(b.userId)).toSet()
+        val names = if (ids.isEmpty()) emptyMap()
+        else userRepo.findAllById(ids).associate { it.id to it.name }
+        return BookingDto.from(b, names[b.userId], ps, names)
+    }
+
+    /** SHARE booking flips to PAID once all 4 tranches are settled (auto, reversible via P-02). */
+    private fun syncBookingPaymentState(b: CourtBooking) {
+        if (b.mode != BookingMode.SHARE || b.paymentStatus == CourtPaymentStatus.REFUNDED) return
+        val ps = players.findByBookingId(b.id)
+        val allSettled = ps.size >= BookingDto.SHARE_SLOTS &&
+            ps.none { it.paymentStatus == PlayerPaymentStatus.PENDING }
+        val next = if (allSettled) CourtPaymentStatus.PAID else CourtPaymentStatus.PENDING
+        if (b.paymentStatus != next) {
+            b.paymentStatus = next
+            b.updatedAt = Instant.now()
+            bookings.save(b)
+        }
+    }
+
+    private fun CourtPaymentMethod.toPlayerMethod(): PlayerPaymentMethod? = when (this) {
+        CourtPaymentMethod.D17 -> PlayerPaymentMethod.D17
+        CourtPaymentMethod.WALLET -> PlayerPaymentMethod.WALLET
+        CourtPaymentMethod.CARD -> PlayerPaymentMethod.CARD
+        CourtPaymentMethod.CASH -> PlayerPaymentMethod.CASH
+        CourtPaymentMethod.PAY_AT_CLUB -> null
+    }
 
     private fun resolveUser(req: CreateBookingRequest, adminId: UUID): UUID = when {
         req.userId != null -> req.userId
