@@ -44,7 +44,8 @@ class MemberCourtController(
         val startsAt: Instant,
         val endsAt: Instant,
         val available: Boolean,
-        val reason: String?,   // "BOOKED" | "BLOCKED" | null
+        val reason: String?,   // "BOOKED" | "BLOCKED" | "SHARE_OPEN" | null
+        val openShareSlots: Int = 0,   // free tranches when a shared match is joinable
     )
 
     @GetMapping("/{id}/slots")
@@ -72,6 +73,9 @@ class MemberCourtController(
             courtId = id, status = BookingStatus.CONFIRMED,
             endsAt = dayEnd, startsAt = dayStart,
         )
+        val playerCounts = if (confirmedBookings.isEmpty()) emptyMap()
+        else players.findByBookingIdIn(confirmedBookings.map { it.id })
+            .groupingBy { it.bookingId }.eachCount()
 
         val allCourtBlocks = blocks.findByCourtId(id)
         // Java DayOfWeek: MON=1..SUN=7 → convert to 0=Sun..6=Sat to match recurringDow
@@ -81,8 +85,18 @@ class MemberCourtController(
             val slotStart = zdtStart.toInstant()
             val slotEnd = zdtStart.plus(SLOT_DURATION).toInstant()
 
-            val isBooked = confirmedBookings.any { b -> b.startsAt < slotEnd && b.endsAt > slotStart }
-            if (isBooked) return@map SlotDto(slotStart, slotEnd, false, "BOOKED")
+            val overlapping = confirmedBookings.filter { b -> b.startsAt < slotEnd && b.endsAt > slotStart }
+            if (overlapping.isNotEmpty()) {
+                // A shared match with free tranches is joinable, not "taken" (US-1.1).
+                val openShare = overlapping
+                    .filter { it.mode == BookingMode.SHARE }
+                    .takeIf { it.size == overlapping.size } // no FULL booking in the slot
+                    ?.firstOrNull { (playerCounts[it.id] ?: 1) < 4 }
+                if (openShare != null) {
+                    return@map SlotDto(slotStart, slotEnd, true, "SHARE_OPEN", 4 - (playerCounts[openShare.id] ?: 1))
+                }
+                return@map SlotDto(slotStart, slotEnd, false, "BOOKED")
+            }
 
             val slotStartTime = zdtStart.toLocalTime()
             val slotEndTime = zdtStart.plus(SLOT_DURATION).toLocalTime()
@@ -127,10 +141,20 @@ class MemberCourtController(
             courtId = id, status = BookingStatus.CONFIRMED,
             endsAt = endsAt, startsAt = startsAt,
         )
-        if (conflicts.isNotEmpty())
-            throw BadRequestException("takeoff.court.slot_taken", "This slot is already booked")
 
-        val priceDt = DEFAULT_PRICE_DT
+        // SHARE: joining an existing shared match takes an open tranche slot (US-1.1/2.5)
+        // instead of creating an overlapping booking.
+        if (req.mode == BookingMode.SHARE) {
+            val openMatch = conflicts.firstOrNull { it.mode == BookingMode.SHARE }
+            if (conflicts.any { it.mode == BookingMode.FULL })
+                throw BadRequestException("takeoff.court.slot_taken", "This slot is already booked")
+            if (openMatch != null) return joinSharedMatch(openMatch, court.name, req, claims.userId)
+        } else if (conflicts.isNotEmpty()) {
+            throw BadRequestException("takeoff.court.slot_taken", "This slot is already booked")
+        }
+
+        val priceDt = if (req.mode == BookingMode.SHARE)
+            DEFAULT_PRICE_DT.divide(BigDecimal(4)) else DEFAULT_PRICE_DT
         val paymentStatus = when (req.paymentMethod) {
             CourtPaymentMethod.WALLET -> {
                 walletService.apply(
@@ -176,39 +200,96 @@ class MemberCourtController(
         )
     }
 
+    /** Join an existing shared match: one participant row, no overlapping booking. */
+    private fun joinSharedMatch(match: CourtBooking, courtName: String, req: BookCourtRequest, userId: UUID): Map<String, Any?> {
+        val existing = players.findByBookingId(match.id)
+        if (existing.any { it.userId == userId })
+            throw BadRequestException("takeoff.court.already_joined", "You are already in this match")
+        if (existing.size >= 4)
+            throw BadRequestException("takeoff.court.match_full", "This match is already full")
+
+        val share = match.priceDt
+        val paid = req.paymentMethod == CourtPaymentMethod.WALLET
+        if (paid) {
+            walletService.apply(
+                userId = userId, delta = share.negate(),
+                type = WalletEntryType.PAYMENT, reason = "court_booking_share",
+                refType = "court_booking", refId = match.id.toString(),
+            )
+        }
+        players.save(CourtBookingPlayer(
+            bookingId = match.id, userId = userId, shareDt = share,
+            paymentStatus = if (paid) PlayerPaymentStatus.PAID else PlayerPaymentStatus.PENDING,
+            paymentMethod = if (paid) PlayerPaymentMethod.WALLET else null,
+            paidAt = if (paid) Instant.now() else null,
+        ))
+        return mapOf(
+            "bookingId" to match.id, "courtName" to courtName,
+            "startsAt" to match.startsAt, "endsAt" to match.endsAt,
+            "paymentStatus" to (if (paid) CourtPaymentStatus.PAID else CourtPaymentStatus.PAY_AT_CLUB),
+            "priceDt" to share, "joined" to true,
+        )
+    }
+
     // ── GET /api/v1/courts/bookings/mine ──────────────────────────────────
 
     @GetMapping("/bookings/mine")
     fun myBookings(@AuthenticationPrincipal claims: JwtService.Claims): List<Map<String, Any?>> {
         val courtMap = courts.findAll().associateBy { it.id }
-        return bookings.findByUserIdOrderByStartsAtDesc(claims.userId).map { b ->
-            mapOf(
-                "bookingId" to b.id, "courtId" to b.courtId,
-                "courtName" to (courtMap[b.courtId]?.name ?: "Court"),
-                "startsAt" to b.startsAt, "endsAt" to b.endsAt,
-                "status" to b.status, "paymentStatus" to b.paymentStatus,
-                "priceDt" to b.priceDt, "mode" to b.mode, "createdAt" to b.createdAt,
-            )
-        }
+        val organized = bookings.findByUserIdOrderByStartsAtDesc(claims.userId)
+        // Matches joined as a participant (not organizer) also belong in my history (US-4.2).
+        val joinedIds = players.findByUserId(claims.userId).map { it.bookingId }.toSet() -
+            organized.map { it.id }.toSet()
+        val joined = if (joinedIds.isEmpty()) emptyList() else bookings.findAllById(joinedIds)
+        val myShares = players.findByUserId(claims.userId).associateBy { it.bookingId }
+        return (organized.map { it to true } + joined.map { it to false })
+            .sortedByDescending { it.first.startsAt }
+            .map { (b, isOrganizer) ->
+                val share = myShares[b.id]
+                mapOf(
+                    "bookingId" to b.id, "courtId" to b.courtId,
+                    "courtName" to (courtMap[b.courtId]?.name ?: "Court"),
+                    "startsAt" to b.startsAt, "endsAt" to b.endsAt,
+                    "status" to b.status, "paymentStatus" to b.paymentStatus,
+                    "priceDt" to b.priceDt, "mode" to b.mode, "createdAt" to b.createdAt,
+                    "isOrganizer" to isOrganizer,
+                    "myShareDt" to share?.shareDt,
+                    "mySharePaymentStatus" to share?.paymentStatus,
+                )
+            }
     }
 
     // ── DELETE /api/v1/courts/bookings/{id} ───────────────────────────────
 
     @DeleteMapping("/bookings/{bookingId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
+    @Transactional
     fun cancelBooking(
         @PathVariable bookingId: UUID,
         @AuthenticationPrincipal claims: JwtService.Claims,
     ) {
         val booking = bookings.findById(bookingId).orElseThrow { NotFoundException("court_booking", bookingId) }
-        if (booking.userId != claims.userId)
-            throw BadRequestException("takeoff.forbidden", "Not your booking")
         if (booking.status == BookingStatus.CANCELLED)
             throw BadRequestException("takeoff.court.already_cancelled", "Already cancelled")
 
         val hoursUntil = Duration.between(Instant.now(), booking.startsAt).toHours()
         if (hoursUntil < 24)
             throw BadRequestException("takeoff.court.cancel_too_late", "Cannot cancel less than 24 hours before the slot")
+
+        // Non-organizer participant leaving a shared match frees only their tranche (US-2.5).
+        if (booking.userId != claims.userId) {
+            val mine = players.findByBookingId(bookingId).firstOrNull { it.userId == claims.userId }
+                ?: throw BadRequestException("takeoff.forbidden", "Not your booking")
+            if (mine.paymentStatus == PlayerPaymentStatus.PAID && mine.paymentMethod == PlayerPaymentMethod.WALLET) {
+                walletService.apply(
+                    userId = claims.userId, delta = mine.shareDt,
+                    type = WalletEntryType.REFUND, reason = "court_booking_share_cancel",
+                    refType = "court_booking", refId = booking.id.toString(),
+                )
+            }
+            players.delete(mine)
+            return
+        }
 
         if (booking.paymentMethod == CourtPaymentMethod.WALLET && booking.paymentStatus == CourtPaymentStatus.PAID) {
             walletService.apply(

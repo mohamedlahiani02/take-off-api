@@ -11,6 +11,8 @@ interface CourtBookingPlayerRepository : JpaRepository<CourtBookingPlayer, UUID>
 
     fun existsByBookingIdAndUserId(bookingId: UUID, userId: UUID): Boolean
 
+    fun findByUserId(userId: UUID): List<CourtBookingPlayer>
+
     // Receivables: everything a user still owes (US-3.4 reads this per user).
     fun findByUserIdAndPaymentStatus(userId: UUID, status: PlayerPaymentStatus): List<CourtBookingPlayer>
 
