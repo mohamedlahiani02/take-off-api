@@ -27,6 +27,10 @@ class AdminCourtController(private val service: AdminCourtService) {
         @AuthenticationPrincipal admin: JwtService.AdminClaims,
     ): BookingDto = service.createBooking(req, admin.adminId)
 
+    /** US-3.4: outstanding tranches per member. */
+    @GetMapping("/receivables")
+    fun receivables(): List<ReceivableDto> = service.receivables()
+
     /** P-00: booking detail with participant slots. */
     @GetMapping("/bookings/{id}")
     fun bookingDetail(@PathVariable id: UUID): BookingDto = service.bookingDetail(id)

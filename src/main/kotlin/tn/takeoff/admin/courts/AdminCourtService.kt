@@ -307,6 +307,31 @@ class AdminCourtService(
         return dtoWithPlayers(b)
     }
 
+    /** US-3.4: who owes unpaid tranches on matches already played, sorted by amount. */
+    fun receivables(): List<ReceivableDto> {
+        val now = Instant.now()
+        val pending = players.findByPaymentStatus(PlayerPaymentStatus.PENDING)
+        if (pending.isEmpty()) return emptyList()
+        val bookingMap = bookings.findAllById(pending.map { it.bookingId }.toSet()).associateBy { it.id }
+        val due = pending.filter { p ->
+            val b = bookingMap[p.bookingId]
+            b != null && b.status != BookingStatus.CANCELLED && b.startsAt < now
+        }
+        if (due.isEmpty()) return emptyList()
+        val userMap = userRepo.findAllById(due.map { it.userId }.toSet()).associateBy { it.id }
+        return due.groupBy { it.userId }.map { (uid, rows) ->
+            ReceivableDto(
+                userId = uid,
+                userName = userMap[uid]?.name,
+                phone = userMap[uid]?.phone,
+                totalDueDt = rows.fold(java.math.BigDecimal.ZERO) { acc, r -> acc + r.shareDt },
+                unpaidCount = rows.size,
+                oldestDue = rows.mapNotNull { bookingMap[it.bookingId]?.startsAt }.minOrNull(),
+                noShowCount = rows.count { it.noShow },
+            )
+        }.sortedByDescending { it.totalDueDt }
+    }
+
     fun courtHistoryForUser(userId: UUID): List<CourtBookingHistoryDto> {
         val courtNames = courts.findAll().associate { it.id to it.name }
         return bookings.findByUserIdOrderByStartsAtDesc(userId).map { b ->
