@@ -1,5 +1,6 @@
 package tn.takeoff.auth
 
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -13,6 +14,7 @@ import tn.takeoff.users.UserGateway
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
+import java.util.logging.Logger
 
 @Service
 class AuthService(
@@ -22,7 +24,9 @@ class AuthService(
     private val otpService: OtpService,
     private val jwtService: JwtService,
     private val passwordEncoder: PasswordEncoder,
+    @Value("\${takeoff.auth.ghost-claim-enabled:true}") private val ghostClaimEnabled: Boolean,
 ) {
+    private val log = Logger.getLogger(AuthService::class.java.name)
 
     @Transactional
     fun register(dto: RegisterRequest): AuthResponse {
@@ -65,10 +69,15 @@ class AuthService(
     fun sendOtp(dto: SendOtpRequest): SendOtpResponse {
         val phone = normalizePhone(dto.phone)
         otpService.sendOtp(phone)
-        val isNewUser = !userRepo.existsByPhone(phone)
+        val existing = userRepo.findByPhone(phone).orElse(null)
+        val isNewUser = existing == null
+        // A GHOST claim behaves like onboarding: let the user confirm/set their name.
+        val isGhostClaim = existing?.accountStatus == AccountStatus.GHOST && ghostClaimEnabled
         return SendOtpResponse(
             message = if (isNewUser) "Code sent. Welcome to Take Off!" else "Code sent.",
             isNewUser = isNewUser,
+            isGhostClaim = isGhostClaim,
+            suggestedName = if (isGhostClaim) existing?.name else null,
         )
     }
 
@@ -81,9 +90,24 @@ class AuthService(
         }
 
         val existing = userRepo.findByPhone(phone).orElse(null)
+        var claimed = false
         val user = if (existing != null) {
             if (existing.accountStatus == AccountStatus.BLOCKED) {
                 throw UnauthorizedException("takeoff.auth.account_blocked", "Account is blocked")
+            }
+            if (existing.accountStatus == AccountStatus.DELETED) {
+                throw UnauthorizedException("takeoff.auth.invalid_credentials", "Invalid credentials")
+            }
+            // US-3.2: claim a club-created (GHOST) account. Phone is globally unique and the
+            // OTP proves ownership, so all history/bookings/debts/packs already reference this
+            // same user id — we only promote the status and let them set their name.
+            if (existing.accountStatus == AccountStatus.GHOST && ghostClaimEnabled) {
+                existing.accountStatus = AccountStatus.ACTIVE
+                dto.name?.trim()?.takeIf { it.isNotBlank() }?.let { existing.name = it }
+                existing.updatedAt = Instant.now()
+                userRepo.save(existing)
+                claimed = true
+                log.info("GHOST account claimed via OTP: userId=${existing.id}")
             }
             existing
         } else {
@@ -98,7 +122,7 @@ class AuthService(
             userRepo.save(newUser)
         }
 
-        return issueAuth(user)
+        return issueAuth(user, claimed)
     }
 
     private fun normalizePhone(input: String): String {
@@ -180,12 +204,12 @@ class AuthService(
         passwordResetTokenRepo.save(stored)
     }
 
-    private fun issueAuth(user: User): AuthResponse {
+    private fun issueAuth(user: User, claimed: Boolean = false): AuthResponse {
         val claims = JwtService.Claims(user.id, user.email, user.name, user.role)
         val access = jwtService.issueAccessToken(claims)
         val (refreshRaw, refreshEntity) = buildRefreshToken(user)
         refreshTokenRepo.save(refreshEntity)
-        return AuthResponse(TokenPair(access, refreshRaw), UserDto.from(user))
+        return AuthResponse(TokenPair(access, refreshRaw), UserDto.from(user), claimed)
     }
 
     private fun buildRefreshToken(user: User): Pair<String, RefreshToken> {

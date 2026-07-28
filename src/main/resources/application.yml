@@ -52,3 +52,7 @@ takeoff:
     enabled: ${SMS_ENABLED:false}
     brevo-api-key: ${BREVO_API_KEY:}
     sender: ${SMS_SENDER:TakeOff}
+  auth:
+    # US-3.2: when a phone matching a club-created (GHOST) account authenticates via
+    # OTP, upgrade that account to ACTIVE (claim) so its history/debts/packs stay intact.
+    ghost-claim-enabled: ${GHOST_CLAIM_ENABLED:true}
