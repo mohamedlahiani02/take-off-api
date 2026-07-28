@@ -26,6 +26,7 @@ class MemberCourtController(
     private val courts: CourtRepository,
     private val bookings: CourtBookingRepository,
     private val blocks: CourtBlockRepository,
+    private val players: CourtBookingPlayerRepository,
     private val walletService: WalletService,
     private val jwtService: JwtService,
 ) {
@@ -150,6 +151,23 @@ class MemberCourtController(
             paymentStatus = paymentStatus, paymentMethod = req.paymentMethod,
         )
         bookings.save(booking)
+
+        // Organizer is always participant #1 of the match (per-player payment tracking).
+        players.save(CourtBookingPlayer(
+            bookingId = booking.id,
+            userId = claims.userId,
+            shareDt = priceDt,
+            paymentStatus = if (paymentStatus == CourtPaymentStatus.PAID)
+                PlayerPaymentStatus.PAID else PlayerPaymentStatus.PENDING,
+            paymentMethod = when (req.paymentMethod) {
+                CourtPaymentMethod.D17 -> PlayerPaymentMethod.D17
+                CourtPaymentMethod.WALLET -> PlayerPaymentMethod.WALLET
+                CourtPaymentMethod.CARD -> PlayerPaymentMethod.CARD
+                CourtPaymentMethod.CASH -> PlayerPaymentMethod.CASH
+                CourtPaymentMethod.PAY_AT_CLUB -> null
+            },
+            paidAt = if (paymentStatus == CourtPaymentStatus.PAID) Instant.now() else null,
+        ))
 
         return mapOf(
             "bookingId" to booking.id, "courtName" to court.name,

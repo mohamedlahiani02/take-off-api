@@ -27,6 +27,42 @@ class AdminCourtController(private val service: AdminCourtService) {
         @AuthenticationPrincipal admin: JwtService.AdminClaims,
     ): BookingDto = service.createBooking(req, admin.adminId)
 
+    /** P-00: booking detail with participant slots. */
+    @GetMapping("/bookings/{id}")
+    fun bookingDetail(@PathVariable id: UUID): BookingDto = service.bookingDetail(id)
+
+    /** P-01: attach a participant (existing member or new member inline). */
+    @PostMapping("/bookings/{id}/participants")
+    fun addParticipant(
+        @PathVariable id: UUID,
+        @Valid @RequestBody req: AddParticipantRequest,
+        @AuthenticationPrincipal admin: JwtService.AdminClaims,
+    ): BookingDto = service.addParticipant(id, req, admin.adminId)
+
+    /** P-02: settle / adjust one tranche (payment status, method, no-show). */
+    @PatchMapping("/bookings/{id}/participants/{participantId}")
+    fun updateParticipant(
+        @PathVariable id: UUID,
+        @PathVariable participantId: UUID,
+        @RequestBody req: UpdateParticipantRequest,
+        @AuthenticationPrincipal admin: JwtService.AdminClaims,
+    ): BookingDto = service.updateParticipant(id, participantId, req, admin.adminId)
+
+    /** P-03: detach a participant. */
+    @DeleteMapping("/bookings/{id}/participants/{participantId}")
+    fun removeParticipant(
+        @PathVariable id: UUID,
+        @PathVariable participantId: UUID,
+        @AuthenticationPrincipal admin: JwtService.AdminClaims,
+    ): BookingDto = service.removeParticipant(id, participantId, admin.adminId)
+
+    /** P-04: organizer covers the remaining tranches. */
+    @PostMapping("/bookings/{id}/cover-all")
+    fun coverAll(
+        @PathVariable id: UUID,
+        @AuthenticationPrincipal admin: JwtService.AdminClaims,
+    ): BookingDto = service.organizerCoversAll(id, admin.adminId)
+
     /** C-09: update payment status. */
     @PatchMapping("/bookings/{id}/payment")
     fun updatePaymentStatus(
