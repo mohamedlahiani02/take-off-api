@@ -39,6 +39,9 @@ data class VerifyOtpRequest(
 data class SendOtpResponse(
     val message: String,
     val isNewUser: Boolean,
+    // true when the phone belongs to a club-created account about to be claimed (US-3.2).
+    val isGhostClaim: Boolean = false,
+    val suggestedName: String? = null,
 )
 
 data class ForgotPasswordRequest(
@@ -62,6 +65,8 @@ data class TokenPair(
 data class AuthResponse(
     val tokens: TokenPair,
     val user: UserDto,
+    // true when this OTP login upgraded a club-created (GHOST) account (US-3.2).
+    val claimed: Boolean = false,
 )
 
 data class UserDto(
