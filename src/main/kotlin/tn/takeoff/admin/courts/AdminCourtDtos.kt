@@ -187,6 +187,17 @@ data class UpdateParticipantRequest(
     val noShow: Boolean? = null,
 )
 
+/** US-3.4: one member's outstanding court debt. */
+data class ReceivableDto(
+    val userId: UUID,
+    val userName: String?,
+    val phone: String?,
+    val totalDueDt: BigDecimal,
+    val unpaidCount: Int,
+    val oldestDue: Instant?,
+    val noShowCount: Int,
+)
+
 /** History entry for a court booking, returned in user profile. */
 data class CourtBookingHistoryDto(
     val id: UUID,
