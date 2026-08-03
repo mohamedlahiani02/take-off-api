@@ -37,7 +37,7 @@ dependencies {
 	implementation("com.cloudinary:cloudinary-http44:1.39.0")
 
 	// SpringDoc OpenAPI (Swagger UI at /swagger-ui.html). 2.8.x required for Spring Boot 3.5
-	implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.9")
+	implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:3.0.3")
 
 	runtimeOnly("org.postgresql:postgresql")
 	testImplementation("org.springframework.boot:spring-boot-starter-test")
