@@ -31,7 +31,7 @@ dependencies {
 	implementation("org.jetbrains.kotlin:kotlin-reflect")
 
 	// JWT (Auth0 java-jwt — RS256)
-	implementation("com.auth0:java-jwt:4.4.0")
+	implementation("com.auth0:java-jwt:4.6.0")
 
 	// Cloudinary — image upload + CDN (configured via CLOUDINARY_URL env)
 	implementation("com.cloudinary:cloudinary-http44:1.39.0")
