@@ -21,17 +21,22 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource
 import tn.takeoff.admin.auth.AdminJwtAuthFilter
 import tn.takeoff.auth.JwtAuthFilter
 import tn.takeoff.auth.JwtService
+import tn.takeoff.users.UserGateway
 
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
-class SecurityConfig(private val jwtService: JwtService, private val env: Environment) {
+class SecurityConfig(
+    private val jwtService: JwtService,
+    private val env: Environment,
+    private val userGateway: UserGateway,
+) {
 
     @Bean
     fun adminJwtAuthFilter(): AdminJwtAuthFilter = AdminJwtAuthFilter(jwtService)
 
     @Bean
-    fun memberJwtAuthFilter(): JwtAuthFilter = JwtAuthFilter(jwtService)
+    fun memberJwtAuthFilter(): JwtAuthFilter = JwtAuthFilter(jwtService, userGateway)
 
     @Bean
     fun corsConfigurationSource(): CorsConfigurationSource {

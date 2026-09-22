@@ -144,6 +144,11 @@ class AuthService(
             throw UnauthorizedException("takeoff.auth.refresh_expired", "Refresh token expired")
         }
 
+        if (stored.user.accountStatus != AccountStatus.ACTIVE) {
+            refreshTokenRepo.delete(stored)
+            throw UnauthorizedException("takeoff.auth.account_blocked", "Account is not active")
+        }
+
         refreshTokenRepo.delete(stored)
         val claims = JwtService.Claims(stored.user.id, stored.user.email, stored.user.name, stored.user.role)
         val newAccess = jwtService.issueAccessToken(claims)

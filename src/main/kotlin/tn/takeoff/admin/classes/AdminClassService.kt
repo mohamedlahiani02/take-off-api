@@ -144,7 +144,7 @@ class AdminClassService(
     // ── bookings / attendance ──
     @Transactional
     fun addStudent(sessionId: UUID, req: AddStudentRequest, adminId: UUID): ClassBooking {
-        val s = sessions.findById(sessionId).orElseThrow { NotFoundException("class_session", sessionId) }
+        val s = sessions.findByIdForUpdate(sessionId).orElseThrow { NotFoundException("class_session", sessionId) }
         val userId = when {
             req.userId != null -> req.userId
             !req.ghostName.isNullOrBlank() && !req.ghostPhone.isNullOrBlank() ->
@@ -167,6 +167,19 @@ class AdminClassService(
     @Transactional
     fun removeStudent(bookingId: UUID, adminId: UUID) {
         val b = bookings.findById(bookingId).orElseThrow { NotFoundException("class_booking", bookingId) }
+        if (b.status == ClassBookingStatus.BOOKED && b.paidWith == PaidWith.PACK && b.userPackId != null) {
+            userPacks.findById(b.userPackId!!).ifPresent { up ->
+                val restored = (up.creditsRemaining ?: 0) + 1
+                up.creditsRemaining = restored
+                if (up.status == UserPackStatus.EXPIRED) up.status = UserPackStatus.ACTIVE
+                userPacks.save(up)
+                ledger.save(PackCreditLedger(
+                    userPackId = up.id, delta = 1,
+                    type = CreditEntryType.REFUND, reason = "admin_remove",
+                    refType = "class_booking", refId = b.id.toString(),
+                ))
+            }
+        }
         b.status = ClassBookingStatus.CANCELLED; b.updatedAt = Instant.now()
         bookings.save(b)
         auditService.log(adminId, "class.remove_student", "class_booking", bookingId.toString())
@@ -177,6 +190,10 @@ class AdminClassService(
     fun promote(bookingId: UUID, adminId: UUID): ClassBooking {
         val b = bookings.findById(bookingId).orElseThrow { NotFoundException("class_booking", bookingId) }
         if (b.status != ClassBookingStatus.WAITLIST) throw ConflictException("takeoff.class.not_waitlisted", "Not on the waitlist")
+        val session = sessions.findByIdForUpdate(b.sessionId).orElseThrow { NotFoundException("class_session", b.sessionId) }
+        val bookedCount = bookings.countBySessionIdAndStatus(b.sessionId, ClassBookingStatus.BOOKED)
+        if (bookedCount >= session.maxSpots)
+            throw BadRequestException("takeoff.class.full", "Session is already full")
         b.status = ClassBookingStatus.BOOKED; b.waitlistPosition = null; b.updatedAt = Instant.now()
         bookings.save(b)
         auditService.log(adminId, "class.promote", "class_booking", bookingId.toString())

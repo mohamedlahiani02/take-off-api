@@ -6,7 +6,7 @@ import java.time.Instant
 import java.util.UUID
 
 enum class BookingMode { SHARE, FULL }
-enum class CourtPaymentStatus { PAID, PAY_AT_CLUB, PENDING, REFUNDED }
+enum class CourtPaymentStatus { PAID, PARTIAL, PAY_AT_CLUB, PENDING, REFUNDED }
 enum class CourtPaymentMethod { D17, WALLET, CARD, CASH, PAY_AT_CLUB }
 enum class BookingStatus { CONFIRMED, CANCELLED, COMPLETED, NO_SHOW }
 

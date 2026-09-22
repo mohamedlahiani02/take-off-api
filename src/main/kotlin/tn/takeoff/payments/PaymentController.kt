@@ -4,6 +4,7 @@ import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.*
 import tn.takeoff.auth.JwtService
+import tn.takeoff.common.errors.NotFoundException
 import java.math.BigDecimal
 import java.util.UUID
 
@@ -39,6 +40,8 @@ class PaymentController(private val paymentService: PaymentService) {
         @PathVariable id: UUID,
     ): StatusResponse {
         val intent = paymentService.getStatus(id)
+        if (claims?.userId != null && intent.userId != null && intent.userId != claims.userId)
+            throw NotFoundException("payment", id)
         return StatusResponse(intent.status, intent.refType, intent.refId, intent.amountDt)
     }
 }

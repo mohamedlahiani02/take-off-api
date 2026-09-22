@@ -1,7 +1,11 @@
 package tn.takeoff.classes
 
+import jakarta.persistence.LockModeType
 import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.data.jpa.repository.Lock
+import org.springframework.data.jpa.repository.Query
 import java.time.Instant
+import java.util.Optional
 import java.util.UUID
 
 interface ClassTypeRepository : JpaRepository<ClassType, UUID> {
@@ -11,6 +15,10 @@ interface ClassTypeRepository : JpaRepository<ClassType, UUID> {
 
 interface ClassSessionRepository : JpaRepository<ClassSession, UUID> {
     fun findByStartsAtGreaterThanEqualAndStartsAtLessThanOrderByStartsAt(from: Instant, to: Instant): List<ClassSession>
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT s FROM ClassSession s WHERE s.id = :id")
+    fun findByIdForUpdate(id: UUID): Optional<ClassSession>
 }
 
 interface ClassBookingRepository : JpaRepository<ClassBooking, UUID> {

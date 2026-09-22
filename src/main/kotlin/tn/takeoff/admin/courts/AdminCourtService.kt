@@ -67,7 +67,7 @@ class AdminCourtService(
     /** C-02/03/04: book on behalf of an existing or freshly-created ghost user. */
     @Transactional
     fun createBooking(req: CreateBookingRequest, adminId: UUID): BookingDto {
-        val court = courts.findById(req.courtId).orElseThrow { NotFoundException("court", req.courtId) }
+        val court = courts.findByIdForUpdate(req.courtId).orElseThrow { NotFoundException("court", req.courtId) }
         val endsAt = if (court.activity == CourtActivity.PADEL)
             req.startsAt.plusSeconds(5400) // padel is always fixed 90 minutes
         else req.endsAt
@@ -218,7 +218,7 @@ class AdminCourtService(
     /** C-05: cancel with optional wallet refund. */
     @Transactional
     fun cancel(id: UUID, req: CancelBookingRequest, adminId: UUID): BookingDto {
-        val b = bookings.findById(id).orElseThrow { NotFoundException("court_booking", id) }
+        val b = bookings.findByIdForUpdate(id).orElseThrow { NotFoundException("court_booking", id) }
         if (b.status == BookingStatus.CANCELLED) {
             throw ConflictException("takeoff.booking.already_cancelled", "Booking already cancelled")
         }
@@ -227,16 +227,20 @@ class AdminCourtService(
         b.cancelledAt = Instant.now()
         b.updatedAt = Instant.now()
 
-        if (req.refundToWallet && b.userId != null && b.paymentStatus == CourtPaymentStatus.PAID) {
-            walletService.apply(
-                userId = b.userId!!,
-                delta = b.priceDt,
-                type = WalletEntryType.REFUND,
-                reason = "Court booking cancelled: ${req.reason}",
-                adminId = adminId,
-                refType = "court_booking",
-                refId = b.id.toString(),
-            )
+        if (req.refundToWallet) {
+            val allPlayers = players.findByBookingId(id)
+            allPlayers
+                .filter { it.paymentStatus == PlayerPaymentStatus.PAID && it.paymentMethod == PlayerPaymentMethod.WALLET }
+                .forEach { p ->
+                    walletService.apply(
+                        userId = p.userId, delta = p.shareDt,
+                        type = WalletEntryType.REFUND,
+                        reason = "Court booking cancelled: ${req.reason}",
+                        adminId = adminId,
+                        refType = "court_booking",
+                        refId = b.id.toString(),
+                    )
+                }
             b.paymentStatus = CourtPaymentStatus.REFUNDED
         }
         bookings.save(b)

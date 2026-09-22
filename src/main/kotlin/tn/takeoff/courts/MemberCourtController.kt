@@ -133,9 +133,35 @@ class MemberCourtController(
         @Valid @RequestBody req: BookCourtRequest,
         @AuthenticationPrincipal claims: JwtService.Claims,
     ): Map<String, Any?> {
-        val court = courts.findById(id).orElseThrow { NotFoundException("court", id) }
+        val court = courts.findByIdForUpdate(id).orElseThrow { NotFoundException("court", id) }
         val startsAt = Instant.parse(req.startsAt)
         val endsAt = startsAt.plus(SLOT_DURATION)
+
+        if (!court.active)
+            throw BadRequestException("takeoff.court.unavailable", "Court is not available")
+        if (!startsAt.isAfter(Instant.now()))
+            throw BadRequestException("takeoff.court.past_slot", "Cannot book a slot in the past")
+
+        val localDate = startsAt.atZone(TUNIS).toLocalDate()
+        val slotStartTime = startsAt.atZone(TUNIS).toLocalTime()
+        val slotEndTime = endsAt.atZone(TUNIS).toLocalTime()
+
+        if (slotStartTime < OPEN || slotEndTime > CLOSE)
+            throw BadRequestException("takeoff.court.outside_hours", "Booking must be within operating hours (07:00–22:00 Tunis time)")
+        val dow = localDate.dayOfWeek.value % 7
+        val allCourtBlocks = blocks.findByCourtId(id)
+        val isBlocked = allCourtBlocks.any { bl ->
+            if (bl.recurringDow == null) {
+                bl.startsAt < endsAt && bl.endsAt > startsAt
+            } else {
+                bl.recurringDow == dow &&
+                (bl.recurringUntil == null || !localDate.isAfter(bl.recurringUntil)) &&
+                bl.startsAt.atZone(TUNIS).toLocalTime() < slotEndTime &&
+                bl.endsAt.atZone(TUNIS).toLocalTime() > slotStartTime
+            }
+        }
+        if (isBlocked)
+            throw BadRequestException("takeoff.court.slot_blocked", "This slot is not available for booking")
 
         val conflicts = bookings.findByCourtIdAndStatusAndStartsAtLessThanAndEndsAtGreaterThan(
             courtId = id, status = BookingStatus.CONFIRMED,
@@ -155,16 +181,16 @@ class MemberCourtController(
 
         val priceDt = if (req.mode == BookingMode.SHARE)
             DEFAULT_PRICE_DT.divide(BigDecimal(4)) else DEFAULT_PRICE_DT
-        val paymentStatus = when (req.paymentMethod) {
-            CourtPaymentMethod.WALLET -> {
+        val paymentStatus = when {
+            req.paymentMethod == CourtPaymentMethod.WALLET -> {
                 walletService.apply(
                     userId = claims.userId, delta = priceDt.negate(),
                     type = WalletEntryType.PAYMENT, reason = "court_booking",
                     refType = "court_booking", refId = court.id.toString(),
                 )
-                CourtPaymentStatus.PAID
+                if (req.mode == BookingMode.SHARE) CourtPaymentStatus.PARTIAL else CourtPaymentStatus.PAID
             }
-            CourtPaymentMethod.PAY_AT_CLUB -> CourtPaymentStatus.PAY_AT_CLUB
+            req.paymentMethod == CourtPaymentMethod.PAY_AT_CLUB -> CourtPaymentStatus.PAY_AT_CLUB
             else -> CourtPaymentStatus.PENDING
         }
 
@@ -177,12 +203,12 @@ class MemberCourtController(
         bookings.save(booking)
 
         // Organizer is always participant #1 of the match (per-player payment tracking).
+        val organizerPaid = req.paymentMethod == CourtPaymentMethod.WALLET
         players.save(CourtBookingPlayer(
             bookingId = booking.id,
             userId = claims.userId,
             shareDt = priceDt,
-            paymentStatus = if (paymentStatus == CourtPaymentStatus.PAID)
-                PlayerPaymentStatus.PAID else PlayerPaymentStatus.PENDING,
+            paymentStatus = if (organizerPaid) PlayerPaymentStatus.PAID else PlayerPaymentStatus.PENDING,
             paymentMethod = when (req.paymentMethod) {
                 CourtPaymentMethod.D17 -> PlayerPaymentMethod.D17
                 CourtPaymentMethod.WALLET -> PlayerPaymentMethod.WALLET
@@ -190,7 +216,7 @@ class MemberCourtController(
                 CourtPaymentMethod.CASH -> PlayerPaymentMethod.CASH
                 CourtPaymentMethod.PAY_AT_CLUB -> null
             },
-            paidAt = if (paymentStatus == CourtPaymentStatus.PAID) Instant.now() else null,
+            paidAt = if (organizerPaid) Instant.now() else null,
         ))
 
         return mapOf(
@@ -268,7 +294,7 @@ class MemberCourtController(
         @PathVariable bookingId: UUID,
         @AuthenticationPrincipal claims: JwtService.Claims,
     ) {
-        val booking = bookings.findById(bookingId).orElseThrow { NotFoundException("court_booking", bookingId) }
+        val booking = bookings.findByIdForUpdate(bookingId).orElseThrow { NotFoundException("court_booking", bookingId) }
         if (booking.status == BookingStatus.CANCELLED)
             throw BadRequestException("takeoff.court.already_cancelled", "Already cancelled")
 
@@ -291,13 +317,17 @@ class MemberCourtController(
             return
         }
 
-        if (booking.paymentMethod == CourtPaymentMethod.WALLET && booking.paymentStatus == CourtPaymentStatus.PAID) {
-            walletService.apply(
-                userId = claims.userId, delta = booking.priceDt,
-                type = WalletEntryType.REFUND, reason = "court_booking_cancel",
-                refType = "court_booking", refId = booking.id.toString(),
-            )
-        }
+        val allPlayers = players.findByBookingId(bookingId)
+        allPlayers
+            .filter { it.paymentStatus == PlayerPaymentStatus.PAID && it.paymentMethod == PlayerPaymentMethod.WALLET }
+            .forEach { p ->
+                walletService.apply(
+                    userId = p.userId, delta = p.shareDt,
+                    type = WalletEntryType.REFUND,
+                    reason = if (p.userId == booking.userId) "court_booking_cancel" else "court_booking_share_cancel",
+                    refType = "court_booking", refId = booking.id.toString(),
+                )
+            }
 
         booking.status = BookingStatus.CANCELLED
         booking.cancelledAt = Instant.now()

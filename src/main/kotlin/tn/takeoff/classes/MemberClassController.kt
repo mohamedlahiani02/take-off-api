@@ -1,5 +1,6 @@
 ﻿package tn.takeoff.classes
 
+import jakarta.persistence.EntityManager
 import jakarta.validation.Valid
 import jakarta.validation.constraints.NotNull
 import org.springframework.http.HttpStatus
@@ -13,6 +14,7 @@ import tn.takeoff.auth.JwtService
 import tn.takeoff.common.errors.BadRequestException
 import tn.takeoff.common.errors.NotFoundException
 import tn.takeoff.packs.CreditEntryType
+import tn.takeoff.packs.PackActivity
 import tn.takeoff.packs.PackCreditLedger
 import tn.takeoff.packs.PackCreditLedgerRepository
 import tn.takeoff.packs.PackType
@@ -57,6 +59,7 @@ class MemberClassController(
     private val userGateway: UserGateway,
     private val walletService: WalletService,
     private val coaches: tn.takeoff.coaches.CoachRepository,
+    private val em: EntityManager,
 ) {
     // ── Public schedule ──────────────────────────────────────────────────────
 
@@ -108,9 +111,11 @@ class MemberClassController(
         @Valid @RequestBody req: BookRequest,
         @AuthenticationPrincipal claims: JwtService.Claims,
     ): Map<String, Any?> {
-        val session = sessions.findById(req.sessionId).orElseThrow { NotFoundException("session", req.sessionId) }
+        val session = sessions.findByIdForUpdate(req.sessionId).orElseThrow { NotFoundException("session", req.sessionId) }
         if (session.status != SessionStatus.SCHEDULED)
             throw BadRequestException("takeoff.class.cancelled", "This session has been cancelled")
+        if (session.startsAt.isBefore(Instant.now()))
+            throw BadRequestException("takeoff.class.past_session", "Cannot book a session that has already started")
 
         val all = bookings.findBySessionId(session.id)
         val existing = all.firstOrNull {
@@ -127,7 +132,18 @@ class MemberClassController(
             .firstOrNull {
                 it.status == UserPackStatus.ACTIVE &&
                 it.expiresAt.isAfter(Instant.now()) &&
-                (it.unlimited || (it.creditsRemaining ?: 0) > 0)
+                (it.unlimited || (it.creditsRemaining ?: 0) > 0) &&
+                packTypes.findById(it.packTypeId).map { pt -> pt.activity == PackActivity.PILATES }.orElse(false)
+            }
+            ?.let { candidate ->
+                val locked = userPacks.findByIdForUpdate(candidate.id).orElse(null) ?: return@let null
+                em.refresh(locked)
+                locked.takeIf {
+                    it.status == UserPackStatus.ACTIVE &&
+                    it.expiresAt.isAfter(Instant.now()) &&
+                    (it.unlimited || (it.creditsRemaining ?: 0) > 0) &&
+                    packTypes.findById(it.packTypeId).map { pt -> pt.activity == PackActivity.PILATES }.orElse(false)
+                }
             }
 
         val paidWith: PaidWith

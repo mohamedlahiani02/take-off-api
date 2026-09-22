@@ -1,4 +1,4 @@
-﻿package tn.takeoff.orders
+package tn.takeoff.orders
 
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.PageRequest
@@ -45,7 +45,6 @@ class OrderService(
 
     @Transactional
     fun place(userId: UUID?, dto: PlaceOrderRequest): OrderDto {
-        // Change C — Block guest wallet payment
         if (dto.paymentMethod == PaymentMethod.WALLET && userId == null) {
             throw BadRequestException("takeoff.order.wallet_requires_auth", "Wallet payment requires authentication")
         }
@@ -53,14 +52,17 @@ class OrderService(
         val user = userId?.let { userRepo.findById(it).orElse(null) }
         val ref = generateRef()
 
-        // Change A — Server-side price lookup: resolve authoritative unit prices
         val resolvedPrices = dto.items.map { item ->
             if (item.productId != null) {
                 val product = productGateway.findById(item.productId).orElseThrow {
                     BadRequestException("takeoff.product.not_found", "Product not found: ${item.productId}")
                 }
+                if (!product.isActive)
+                    throw BadRequestException("takeoff.product.inactive", "Product '${item.productName}' is not available")
                 product.priceDt
             } else {
+                if (item.unitPriceDt <= BigDecimal.ZERO)
+                    throw BadRequestException("takeoff.order.invalid_price", "Item price must be positive")
                 item.unitPriceDt
             }
         }
@@ -68,11 +70,9 @@ class OrderService(
         val subtotal = dto.items.zip(resolvedPrices)
             .sumOf { (item, price) -> price.multiply(BigDecimal(item.qty)) }
 
-        // Timbre fiscal: 1 DT for orders with physical products >= 10 DT
         val hasPhysical = dto.items.any { it.productId != null }
         val timbreFiscal = if (hasPhysical && subtotal >= TIMBRE_THRESHOLD) TIMBRE_FISCAL else BigDecimal.ZERO
 
-        // Server-side delivery fee: 0 for PICKUP; 7 DT for Sfax (city == "sfax" or blank); 15 DT otherwise
         val deliveryFee = when (dto.deliveryMethod) {
             DeliveryMethod.PICKUP -> BigDecimal.ZERO
             DeliveryMethod.DELIVER -> {
@@ -83,7 +83,6 @@ class OrderService(
 
         val total = subtotal.add(timbreFiscal).add(deliveryFee)
 
-        // Stock check and decrement per variant (pessimistic locked)
         dto.items.forEach { item ->
             val pid = item.productId ?: return@forEach
             val variants = variantRepo.findByProductIdForUpdate(pid)
@@ -91,6 +90,10 @@ class OrderService(
                 variants.firstOrNull { it.size.equals(item.size, ignoreCase = true) }
             else
                 variants.firstOrNull()
+
+            if (variants.isNotEmpty() && variant == null) {
+                throw BadRequestException("takeoff.product.invalid_size", "Invalid or missing size for '${item.productName}'")
+            }
 
             if (variant != null) {
                 if (variant.stock < item.qty)
@@ -100,6 +103,15 @@ class OrderService(
                     )
                 variant.stock -= item.qty
                 variantRepo.save(variant)
+            } else {
+                val product = productGateway.findByIdForUpdate(pid).orElse(null) ?: return@forEach
+                if (product.stock < item.qty)
+                    throw BadRequestException(
+                        "takeoff.product.out_of_stock",
+                        "Not enough stock for '${item.productName}' (available: ${product.stock})"
+                    )
+                product.stock -= item.qty
+                productGateway.save(product)
             }
         }
 
@@ -127,7 +139,6 @@ class OrderService(
             ))
         }
 
-        // Wallet payment: deduct immediately (pessimistic-locked inside walletService)
         if (dto.paymentMethod == PaymentMethod.WALLET && userId != null) {
             walletService.apply(
                 userId = userId, delta = total.negate(),
@@ -136,8 +147,7 @@ class OrderService(
             )
         }
 
-        // Wallet and card payments are settled at checkout → skip the admin-approval PENDING step
-        if (dto.paymentMethod == PaymentMethod.WALLET || dto.paymentMethod == PaymentMethod.CARD) {
+        if (dto.paymentMethod == PaymentMethod.WALLET) {
             order.status = OrderStatus.CONFIRMED
             order.updatedAt = Instant.now()
         }
@@ -147,7 +157,7 @@ class OrderService(
 
     @Transactional
     fun cancelMine(orderId: UUID, userId: UUID): OrderDto {
-        val order = orderRepo.findById(orderId).orElseThrow { NotFoundException("order", orderId) }
+        val order = orderRepo.findByIdForUpdate(orderId).orElseThrow { NotFoundException("order", orderId) }
         if (order.user?.id != userId) throw NotFoundException("order", orderId)
         if (order.status !in listOf(OrderStatus.PENDING, OrderStatus.CONFIRMED))
             throw BadRequestException("takeoff.order.not_cancellable", "Order cannot be cancelled in status ${order.status}")
@@ -158,8 +168,10 @@ class OrderService(
 
     @Transactional
     fun updateStatus(orderId: UUID, action: String): OrderDto {
-        val order = orderRepo.findById(orderId).orElseThrow { NotFoundException("order", orderId) }
+        val order = orderRepo.findByIdForUpdate(orderId).orElseThrow { NotFoundException("order", orderId) }
         if (action.lowercase() == "cancel") {
+            if (order.status == OrderStatus.CANCELLED)
+                throw BadRequestException("takeoff.order.already_cancelled", "Order is already cancelled")
             doCancel(order)
             return OrderDto.from(order)
         }
@@ -176,9 +188,7 @@ class OrderService(
         return OrderDto.from(orderRepo.save(order))
     }
 
-    // Change E — Shared cancel logic
     private fun doCancel(order: Order) {
-        // Refund to wallet if paid via wallet
         val uid = order.user?.id
         if (order.paymentMethod == PaymentMethod.WALLET && uid != null) {
             walletService.apply(
@@ -188,7 +198,6 @@ class OrderService(
             )
         }
 
-        // Restore stock (pessimistic locked)
         order.items.forEach { item ->
             val pid = item.productId ?: return@forEach
             val variants = variantRepo.findByProductIdForUpdate(pid)
@@ -199,6 +208,11 @@ class OrderService(
             if (variant != null) {
                 variant.stock += item.qty
                 variantRepo.save(variant)
+            } else {
+                productGateway.findByIdForUpdate(pid).ifPresent { product ->
+                    product.stock += item.qty
+                    productGateway.save(product)
+                }
             }
         }
 
@@ -207,7 +221,6 @@ class OrderService(
         orderRepo.save(order)
     }
 
-    // Change D — Collision-resistant order ref
     private fun generateRef(): String =
         "TKO-" + java.util.UUID.randomUUID().toString().replace("-", "").uppercase().take(10)
 }

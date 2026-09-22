@@ -1,5 +1,6 @@
 ﻿package tn.takeoff.orders.dto
 
+import jakarta.validation.Valid
 import jakarta.validation.constraints.DecimalMin
 import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotBlank
@@ -23,7 +24,7 @@ data class PlaceOrderRequest(
     val deliveryAddress: Map<String, String>? = null,
     @field:NotNull val paymentMethod: PaymentMethod,
     val contact: Map<String, String> = emptyMap(),
-    @field:NotEmpty val items: List<CartItemInput>,
+    @field:Valid @field:NotEmpty val items: List<CartItemInput>,
     val deliveryFeeDt: BigDecimal = BigDecimal.ZERO,
     val discountCode: String? = null,
 )

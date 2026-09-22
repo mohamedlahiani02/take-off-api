@@ -6,6 +6,7 @@ import org.springframework.data.domain.Sort
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import tn.takeoff.admin.audit.AuditService
+import tn.takeoff.auth.RefreshTokenGateway
 import tn.takeoff.common.PhoneUtil
 import tn.takeoff.common.errors.BadRequestException
 import tn.takeoff.common.errors.ConflictException
@@ -25,6 +26,7 @@ class AdminUserService(
     private val users: UserRepository,
     private val walletLedger: WalletLedgerRepository,
     private val auditService: AuditService,
+    private val refreshTokens: RefreshTokenGateway,
 ) {
 
     fun search(term: String): List<UserSummaryDto> {
@@ -141,6 +143,7 @@ class AdminUserService(
         u.accountStatus = if (blocked) AccountStatus.BLOCKED else AccountStatus.ACTIVE
         u.updatedAt = Instant.now()
         users.save(u)
+        if (blocked) refreshTokens.deleteAllByUserId(id)
         auditService.log(adminId, if (blocked) "user.block" else "user.unblock", "user", id.toString())
         return UserSummaryDto.from(u)
     }
@@ -152,6 +155,7 @@ class AdminUserService(
         u.accountStatus = AccountStatus.DELETED
         u.updatedAt = Instant.now()
         users.save(u)
+        refreshTokens.deleteAllByUserId(id)
         auditService.log(adminId, "user.soft_delete", "user", id.toString())
     }
 
