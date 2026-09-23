@@ -1,6 +1,7 @@
 package tn.takeoff.tournaments
 
 import org.springframework.web.bind.annotation.*
+import tn.takeoff.common.errors.NotFoundException
 import java.math.BigDecimal
 import java.time.Instant
 import java.util.UUID
@@ -32,7 +33,18 @@ class MemberTournamentController(
     fun listPublic(): List<PublicTournamentDto> =
         tournaments.findAllByOrderByStartsAtDesc()
             .filter { it.status != TournamentStatus.DRAFT }
-            .map { t ->
+            .map { t -> toPublicDto(t) }
+
+    /** One tournament, for the public detail page. Drafts stay unpublished. */
+    @GetMapping("/{id}")
+    fun getPublic(@PathVariable id: UUID): PublicTournamentDto {
+        val t = tournaments.findById(id)
+            .filter { it.status != TournamentStatus.DRAFT }
+            .orElseThrow { NotFoundException("tournament", id) }
+        return toPublicDto(t)
+    }
+
+    private fun toPublicDto(t: Tournament): PublicTournamentDto =
                 PublicTournamentDto(
                     id = t.id,
                     title = t.title,
@@ -49,5 +61,4 @@ class MemberTournamentController(
                     registrationDeadline = t.registrationDeadline,
                     currentRegistrations = registrations.countByTournamentIdAndStatus(t.id, RegStatus.CONFIRMED),
                 )
-            }
 }

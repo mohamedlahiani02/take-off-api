@@ -30,6 +30,14 @@ class CoachService(
         return coaches.map(CoachDto::from)
     }
 
+    /** One coach, for the public detail page. Inactive coaches are not exposed. */
+    fun getPublic(id: UUID): CoachDto {
+        val coach = repo.findById(id)
+            .filter { it.active }
+            .orElseThrow { NotFoundException("coach", id) }
+        return CoachDto.from(coach)
+    }
+
     @Transactional
     fun create(dto: CreateCoachRequest, adminId: UUID): CoachDto {
         val coach = Coach(

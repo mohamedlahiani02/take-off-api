@@ -12,4 +12,7 @@ class CoachesController(private val service: CoachService) {
         @RequestParam(defaultValue = "PADEL") activity: String,
         @RequestParam(defaultValue = "false") preview: Boolean,
     ): List<CoachDto> = service.listPublic(CoachActivity.valueOf(activity.uppercase()), preview)
+
+    @GetMapping("/{id}")
+    fun getById(@PathVariable id: java.util.UUID): CoachDto = service.getPublic(id)
 }
