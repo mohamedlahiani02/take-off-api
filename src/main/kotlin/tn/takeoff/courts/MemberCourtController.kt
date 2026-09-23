@@ -31,10 +31,9 @@ class MemberCourtController(
     private val jwtService: JwtService,
 ) {
     companion object {
-        private val TUNIS = ZoneId.of("Africa/Tunis")
-        private val SLOT_DURATION = Duration.ofMinutes(90)
-        private val OPEN = LocalTime.of(7, 0)
-        private val CLOSE = LocalTime.of(22, 0)
+        // Slot geometry lives in CourtSlots so availability and booking cannot drift apart.
+        private val TUNIS = CourtSlots.TUNIS
+        private val SLOT_DURATION = CourtSlots.SLOT_DURATION
         val DEFAULT_PRICE_DT: BigDecimal = BigDecimal("80.000")
     }
 
@@ -57,14 +56,8 @@ class MemberCourtController(
         courts.findById(id).orElseThrow { NotFoundException("court", id) }
         val localDate = LocalDate.parse(date)
 
-        // Generate 90-min slots 07:00–22:00 in Tunis time
-        val slotStarts = mutableListOf<ZonedDateTime>()
-        var cursor = ZonedDateTime.of(localDate, OPEN, TUNIS)
-        val close = ZonedDateTime.of(localDate, CLOSE, TUNIS)
-        while (!cursor.plus(SLOT_DURATION).isAfter(close)) {
-            slotStarts.add(cursor)
-            cursor = cursor.plus(SLOT_DURATION)
-        }
+        // Same grid the booking path validates against (CourtSlots).
+        val slotStarts = CourtSlots.startsFor(localDate)
 
         val dayStart = ZonedDateTime.of(localDate, LocalTime.MIDNIGHT, TUNIS).toInstant()
         val dayEnd = dayStart.plus(Duration.ofDays(1))
@@ -142,12 +135,12 @@ class MemberCourtController(
         if (!startsAt.isAfter(Instant.now()))
             throw BadRequestException("takeoff.court.past_slot", "Cannot book a slot in the past")
 
+        // Rejects off-grid starts and any slot that would run past closing time or midnight.
+        CourtSlots.requireBookableStart(startsAt)
+
         val localDate = startsAt.atZone(TUNIS).toLocalDate()
         val slotStartTime = startsAt.atZone(TUNIS).toLocalTime()
         val slotEndTime = endsAt.atZone(TUNIS).toLocalTime()
-
-        if (slotStartTime < OPEN || slotEndTime > CLOSE)
-            throw BadRequestException("takeoff.court.outside_hours", "Booking must be within operating hours (07:00–22:00 Tunis time)")
         val dow = localDate.dayOfWeek.value % 7
         val allCourtBlocks = blocks.findByCourtId(id)
         val isBlocked = allCourtBlocks.any { bl ->

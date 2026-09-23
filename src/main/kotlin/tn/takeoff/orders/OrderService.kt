@@ -28,6 +28,7 @@ class OrderService(
     companion object {
         private val TIMBRE_FISCAL = java.math.BigDecimal("1.000")
         private val TIMBRE_THRESHOLD = java.math.BigDecimal("10.000")
+
     }
 
     @Transactional(readOnly = true)
@@ -170,28 +171,34 @@ class OrderService(
     fun updateStatus(orderId: UUID, action: String): OrderDto {
         val order = orderRepo.findByIdForUpdate(orderId).orElseThrow { NotFoundException("order", orderId) }
         if (action.lowercase() == "cancel") {
-            if (order.status == OrderStatus.CANCELLED)
-                throw BadRequestException("takeoff.order.already_cancelled", "Order is already cancelled")
+            if (!OrderTransitions.canCancel(order.status))
+                throw BadRequestException(
+                    "takeoff.order.not_cancellable",
+                    "Order cannot be cancelled in status ${order.status}",
+                )
             doCancel(order)
             return OrderDto.from(order)
         }
-        order.status = when (action.lowercase()) {
-            "confirm" -> OrderStatus.CONFIRMED
-            "prepare" -> OrderStatus.PREPARING
-            "ship" -> OrderStatus.SHIPPED
-            "deliver" -> OrderStatus.DELIVERED
-            "pickup_ready" -> OrderStatus.PICKUP_READY
-            "picked_up" -> OrderStatus.PICKED_UP
-            else -> throw BadRequestException("takeoff.order.invalid_action", "Unknown action: $action")
-        }
+        val target = OrderTransitions.statusForAction(action)
+            ?: throw BadRequestException("takeoff.order.invalid_action", "Unknown action: $action")
+        if (!OrderTransitions.allows(order.status, target))
+            throw BadRequestException(
+                "takeoff.order.invalid_transition",
+                "Cannot move an order from ${order.status} to $target",
+            )
+        order.status = target
         order.updatedAt = Instant.now()
         return OrderDto.from(orderRepo.save(order))
     }
 
     private fun doCancel(order: Order) {
+        // Guard against a second refund/restock for the same order, however the order got
+        // back into a cancellable state. The ledger identity is the refund identity.
+        if (order.status == OrderStatus.CANCELLED) return
+
         val uid = order.user?.id
         if (order.paymentMethod == PaymentMethod.WALLET && uid != null) {
-            walletService.apply(
+            walletService.applyOnce(
                 userId = uid, delta = order.totalDt,
                 type = WalletEntryType.REFUND, reason = "order_cancel_${order.orderRef}",
                 refType = "order", refId = order.orderRef,

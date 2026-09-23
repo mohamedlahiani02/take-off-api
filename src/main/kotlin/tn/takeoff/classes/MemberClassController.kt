@@ -61,6 +61,15 @@ class MemberClassController(
     private val coaches: tn.takeoff.coaches.CoachRepository,
     private val em: EntityManager,
 ) {
+    companion object {
+        /**
+         * Methods that settle a pack immediately. Anything else (pay-at-club, card) would hand out
+         * credits before the money arrives and is refused until a settlement workflow exists.
+         */
+        private val SUPPORTED_PACK_PAYMENT_METHODS = setOf("WALLET")
+        private const val MAX_PACK_QUANTITY = 10
+    }
+
     // ── Public schedule ──────────────────────────────────────────────────────
 
     @GetMapping("/schedule")
@@ -241,7 +250,15 @@ class MemberClassController(
     fun publicPackTypes(): List<PackType> =
         packTypes.findAllByOrderByActivityAscDisplayOrderAsc().filter { it.active }
 
-    data class PurchasePackRequest(val packTypeId: UUID)
+    /**
+     * A pack is only issued against a settled payment. [paymentMethod] must therefore be one the
+     * server can settle synchronously — see [SUPPORTED_PACK_PAYMENT_METHODS].
+     */
+    data class PurchasePackRequest(
+        val packTypeId: UUID,
+        val paymentMethod: String = "WALLET",
+        val quantity: Int = 1,
+    )
 
     @PostMapping("/packs/purchase")
     @ResponseStatus(HttpStatus.CREATED)
@@ -250,21 +267,42 @@ class MemberClassController(
         @RequestBody req: PurchasePackRequest,
         @AuthenticationPrincipal claims: JwtService.Claims,
     ): Map<String, Any?> {
+        val method = req.paymentMethod.trim().uppercase()
+        if (method !in SUPPORTED_PACK_PAYMENT_METHODS) {
+            // Pay-at-club would mean issuing credits the club has not been paid for; there is no
+            // reception-side settlement workflow yet, so it is refused rather than silently
+            // charged to the wallet (which is what used to happen).
+            throw BadRequestException(
+                "takeoff.pack.unsupported_payment_method",
+                "Packs can currently only be paid from the club wallet, not by '$method'. " +
+                    "Top up your wallet or buy the pack at reception.",
+            )
+        }
+        if (req.quantity < 1 || req.quantity > MAX_PACK_QUANTITY) {
+            throw BadRequestException(
+                "takeoff.pack.invalid_quantity",
+                "Quantity must be between 1 and $MAX_PACK_QUANTITY",
+            )
+        }
+
         val packType = packTypes.findById(req.packTypeId).orElseThrow { NotFoundException("packType", req.packTypeId) }
         if (!packType.active) throw BadRequestException("takeoff.pack.inactive", "Pack not available")
 
+        // Server-authoritative price: quantity x catalogue price, never a client-supplied total.
+        val totalDt = packType.priceDt.multiply(BigDecimal(req.quantity))
+
         val user = userGateway.findById(claims.userId)
             .orElseThrow { NotFoundException("user", claims.userId) }
-        if (user.walletDt < packType.priceDt) {
+        if (user.walletDt < totalDt) {
             throw BadRequestException(
                 "takeoff.wallet.insufficient_funds",
-                "Insufficient wallet balance. Required: ${packType.priceDt} DT, available: ${user.walletDt} DT."
+                "Insufficient wallet balance. Required: $totalDt DT, available: ${user.walletDt} DT."
             )
         }
 
         walletService.apply(
             userId = claims.userId,
-            delta = packType.priceDt.negate(),
+            delta = totalDt.negate(),
             type = WalletEntryType.PAYMENT,
             reason = "pack_purchase",
             refType = "pack_type",
@@ -273,19 +311,27 @@ class MemberClassController(
 
         val expiresAt = Instant.now().plus((packType.validityMonths * 30).toLong(), ChronoUnit.DAYS)
 
-        val userPack = UserPack(
-            userId = claims.userId,
-            packTypeId = packType.id,
-            creditsRemaining = packType.creditCount,
-            unlimited = packType.unlimited,
-            expiresAt = expiresAt,
-        )
-        userPacks.save(userPack)
+        val issued = (1..req.quantity).map {
+            val userPack = UserPack(
+                userId = claims.userId,
+                packTypeId = packType.id,
+                creditsRemaining = packType.creditCount,
+                unlimited = packType.unlimited,
+                expiresAt = expiresAt,
+            )
+            userPacks.save(userPack)
+            userPack
+        }
 
         return mapOf(
-            "userPackId" to userPack.id, "packName" to packType.name,
+            "userPackId" to issued.first().id,
+            "userPackIds" to issued.map { it.id },
+            "packName" to packType.name,
+            "quantity" to req.quantity,
             "credits" to packType.creditCount, "unlimited" to packType.unlimited,
-            "expiresAt" to expiresAt, "priceDt" to packType.priceDt,
+            "expiresAt" to expiresAt,
+            "priceDt" to packType.priceDt, "totalDt" to totalDt,
+            "paymentMethod" to method,
         )
     }
 

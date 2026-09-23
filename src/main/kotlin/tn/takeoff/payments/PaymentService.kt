@@ -10,6 +10,7 @@ import tn.takeoff.common.errors.BadRequestException
 import tn.takeoff.common.errors.NotFoundException
 import tn.takeoff.orders.OrderGateway
 import tn.takeoff.orders.OrderStatus
+import tn.takeoff.orders.PaymentMethod
 import java.math.BigDecimal
 import java.util.UUID
 
@@ -23,28 +24,64 @@ class PaymentService(
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
+    companion object {
+        /**
+         * Reference types a payment intent may be raised against. Anything outside this set is
+         * refused: an intent must always resolve to a real entity whose outstanding amount the
+         * server can compute. Add a type here only together with its resolver branch in [initiate].
+         */
+        private val SUPPORTED_REF_TYPES = setOf("ORDER")
+
+        /** Konnect operates in Tunisian dinars; amounts are sent in millimes. */
+        const val CURRENCY = "TND"
+    }
+
     data class InitiateResult(val intentId: UUID, val paymentUrl: String)
 
     @Transactional
     fun initiate(userId: UUID?, refType: String, refId: String, amountDt: BigDecimal, returnUrl: String): InitiateResult {
-        var authorizedAmount = amountDt
-        if (refType.equals("ORDER", ignoreCase = true)) {
-            val orderId = try { UUID.fromString(refId) } catch (_: Exception) {
-                throw BadRequestException("takeoff.payment.invalid_ref", "Invalid order reference")
+        // Every intent must name a supported, existing, owned, payable entity. The amount is
+        // always resolved server-side from that entity; the client-supplied amount is advisory
+        // only and is never trusted. Unknown reference types are refused outright rather than
+        // falling through to a permissive "pay anything" path.
+        val normalizedRefType = refType.trim().uppercase()
+        if (normalizedRefType !in SUPPORTED_REF_TYPES)
+            throw BadRequestException(
+                "takeoff.payment.unsupported_ref_type",
+                "Unsupported payment reference type: $refType",
+            )
+
+        val authorizedAmount: BigDecimal = when (normalizedRefType) {
+            "ORDER" -> {
+                val orderId = try { UUID.fromString(refId) } catch (_: Exception) {
+                    throw BadRequestException("takeoff.payment.invalid_ref", "Invalid order reference")
+                }
+                val order = orderGateway.findById(orderId)
+                    .orElseThrow { BadRequestException("takeoff.payment.invalid_ref", "Order not found") }
+                if (userId == null || order.user?.id != userId)
+                    throw BadRequestException("takeoff.payment.access_denied", "Access denied")
+                if (order.status != OrderStatus.PENDING)
+                    throw BadRequestException("takeoff.payment.order_not_payable", "Order is not in a payable state")
+                if (order.paymentMethod != PaymentMethod.CARD)
+                    throw BadRequestException(
+                        "takeoff.payment.method_mismatch",
+                        "Order is not awaiting a card payment",
+                    )
+                order.totalDt
             }
-            val order = orderGateway.findById(orderId)
-                .orElseThrow { BadRequestException("takeoff.payment.invalid_ref", "Order not found") }
-            if (order.user?.id != userId)
-                throw BadRequestException("takeoff.payment.access_denied", "Access denied")
-            if (order.status != OrderStatus.PENDING)
-                throw BadRequestException("takeoff.payment.order_not_payable", "Order is not in a payable state")
-            authorizedAmount = order.totalDt
+            else -> throw BadRequestException(
+                "takeoff.payment.unsupported_ref_type",
+                "Unsupported payment reference type: $refType",
+            )
         }
+
+        if (authorizedAmount <= BigDecimal.ZERO)
+            throw BadRequestException("takeoff.payment.nothing_due", "Nothing is outstanding on this reference")
 
         if (konnectApiKey.isBlank()) {
             log.warn("KONNECT_API_KEY not set — stub payment mode")
             val intent = intents.save(PaymentIntent(
-                userId = userId, refType = refType, refId = refId, amountDt = authorizedAmount,
+                userId = userId, refType = normalizedRefType, refId = refId, amountDt = authorizedAmount,
                 konnectPayRef = "STUB-${UUID.randomUUID()}",
                 konnectPayUrl = "$returnUrl?stub=true",
                 status = "PENDING"
@@ -56,10 +93,10 @@ class PaymentService(
         val restClient = RestClient.create()
         val body = mapOf(
             "receiverWalletId" to konnectWalletId,
-            "token" to "TND",
+            "token" to CURRENCY,
             "amount" to authorizedAmount.multiply(BigDecimal("1000")).toLong(),
             "type" to "immediate",
-            "description" to "$refType:$refId",
+            "description" to "$normalizedRefType:$refId",
             "acceptedPaymentMethods" to listOf("wallet", "bank_card", "e-DINAR"),
             "successUrl" to "$returnUrl?intentId=$intentId",
             "failUrl" to "$returnUrl?intentId=$intentId",
@@ -79,7 +116,7 @@ class PaymentService(
 
         val intent = intents.save(PaymentIntent(
             id = intentId,
-            userId = userId, refType = refType, refId = refId, amountDt = authorizedAmount,
+            userId = userId, refType = normalizedRefType, refId = refId, amountDt = authorizedAmount,
             konnectPayRef = payRef, konnectPayUrl = payUrl, status = "PENDING"
         ))
         return InitiateResult(intent.id, payUrl)

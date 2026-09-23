@@ -20,6 +20,7 @@ import tn.takeoff.courts.CourtBookingPlayerRepository
 import tn.takeoff.courts.CourtPaymentMethod
 import tn.takeoff.courts.CourtPaymentStatus
 import tn.takeoff.courts.CourtRepository
+import tn.takeoff.courts.CourtSlots
 import tn.takeoff.courts.PlayerPaymentMethod
 import tn.takeoff.courts.PlayerPaymentStatus
 import tn.takeoff.users.UserRepository
@@ -74,6 +75,8 @@ class AdminCourtService(
         if (endsAt <= req.startsAt) {
             throw BadRequestException("takeoff.booking.bad_time", "End must be after start")
         }
+        // Padel shares the member slot grid; other activities keep their explicit window.
+        if (court.activity == CourtActivity.PADEL) CourtSlots.requireBookableStart(req.startsAt)
 
         val userId = resolveUser(req, adminId)
         assertSlotFree(req.courtId, req.startsAt, endsAt, req.mode, excludeBookingId = null)

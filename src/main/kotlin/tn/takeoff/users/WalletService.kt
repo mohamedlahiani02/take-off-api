@@ -51,4 +51,27 @@ class WalletService(
         ))
         return newBalance
     }
+
+    /**
+     * Applies a movement at most once for the (userId, type, refType, refId) identity.
+     *
+     * Row locking alone only serialises concurrent requests — it does not stop a *sequential*
+     * cancel → reopen → cancel from paying a refund twice. This makes the movement itself
+     * idempotent, so repeated or replayed settlement attempts are no-ops.
+     *
+     * @return the new balance when applied, or null when the movement was already recorded.
+     */
+    @Transactional
+    fun applyOnce(
+        userId: UUID,
+        delta: BigDecimal,
+        type: WalletEntryType,
+        reason: String?,
+        adminId: UUID? = null,
+        refType: String,
+        refId: String,
+    ): BigDecimal? {
+        if (ledger.existsByUserIdAndTypeAndRefTypeAndRefId(userId, type, refType, refId)) return null
+        return apply(userId, delta, type, reason, adminId, refType, refId)
+    }
 }
