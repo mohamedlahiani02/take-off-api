@@ -5,6 +5,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.bind.annotation.*
 import tn.takeoff.auth.JwtService
+import tn.takeoff.common.PhoneUtil
 import tn.takeoff.common.errors.BadRequestException
 import tn.takeoff.common.errors.NotFoundException
 import tn.takeoff.users.WalletEntryType
@@ -29,12 +30,13 @@ class MemberCourtController(
     private val players: CourtBookingPlayerRepository,
     private val walletService: WalletService,
     private val jwtService: JwtService,
+    private val pricing: CourtPricing,
+    private val userGateway: tn.takeoff.users.UserGateway,
 ) {
     companion object {
         // Slot geometry lives in CourtSlots so availability and booking cannot drift apart.
         private val TUNIS = CourtSlots.TUNIS
         private val SLOT_DURATION = CourtSlots.SLOT_DURATION
-        val DEFAULT_PRICE_DT: BigDecimal = BigDecimal("80.000")
     }
 
     // ── GET /api/v1/courts/{id}/slots?date=YYYY-MM-DD ────────────────────
@@ -116,7 +118,14 @@ class MemberCourtController(
         @field:NotNull val startsAt: String,
         val mode: BookingMode = BookingMode.FULL,
         val paymentMethod: CourtPaymentMethod = CourtPaymentMethod.PAY_AT_CLUB,
+        /** What the member was shown. Rejected if it no longer matches config. */
+        val quotedPriceDt: BigDecimal? = null,
+        /** Optional partners named at booking time. Naming is not paying. */
+        val participants: List<ParticipantInput> = emptyList(),
     )
+
+    /** A partner named on a match: an existing member by phone, or a guest. */
+    data class ParticipantInput(val phone: String? = null, val guestName: String? = null)
 
     @PostMapping("/{id}/bookings")
     @ResponseStatus(HttpStatus.CREATED)
@@ -172,8 +181,9 @@ class MemberCourtController(
             throw BadRequestException("takeoff.court.slot_taken", "This slot is already booked")
         }
 
-        val priceDt = if (req.mode == BookingMode.SHARE)
-            DEFAULT_PRICE_DT.divide(BigDecimal(4)) else DEFAULT_PRICE_DT
+        // Configuration decides the amount; a quoted price is only ever checked.
+        pricing.requireMatches(req.mode, req.quotedPriceDt)
+        val priceDt = pricing.priceFor(req.mode)
         val paymentStatus = when {
             req.paymentMethod == CourtPaymentMethod.WALLET -> {
                 walletService.apply(
@@ -197,7 +207,7 @@ class MemberCourtController(
 
         // Organizer is always participant #1 of the match (per-player payment tracking).
         val organizerPaid = req.paymentMethod == CourtPaymentMethod.WALLET
-        players.save(CourtBookingPlayer(
+        val organizer = CourtBookingPlayer(
             bookingId = booking.id,
             userId = claims.userId,
             shareDt = priceDt,
@@ -210,12 +220,28 @@ class MemberCourtController(
                 CourtPaymentMethod.PAY_AT_CLUB -> null
             },
             paidAt = if (organizerPaid) Instant.now() else null,
-        ))
+        )
+        players.save(organizer)
+
+        // Partners named at booking time. Naming is never a payment: each row is
+        // PENDING (or COVERED on a FULL court, which the organiser already paid)
+        // and no wallet is touched. They do take seats, which is what keeps a
+        // SHARE from later admitting a fifth player.
+        val seated = mutableListOf(organizer)
+        for (input in req.participants) {
+            if (seated.size >= pricing.seatsPerCourt) break
+            val extra = buildParticipant(booking, input, seated, addedByUserId = claims.userId)
+            players.save(extra)
+            seated.add(extra)
+        }
 
         return mapOf(
             "bookingId" to booking.id, "courtName" to court.name,
             "startsAt" to startsAt, "endsAt" to endsAt,
             "paymentStatus" to paymentStatus, "priceDt" to priceDt,
+            "mode" to req.mode,
+            "seatsPerCourt" to pricing.seatsPerCourt,
+            "participants" to seated.map(::participantDto),
         )
     }
 
@@ -249,6 +275,154 @@ class MemberCourtController(
             "priceDt" to share, "joined" to true,
         )
     }
+
+
+    // ── GET /api/v1/courts/pricing ────────────────────────────────────────
+
+    /** What a booking costs, so the UI quotes the same figure the server charges. */
+    @GetMapping("/pricing")
+    fun pricing(): Map<String, Any> = mapOf(
+        "fullPriceDt" to pricing.fullPrice(),
+        "seatPriceDt" to pricing.seatPrice(),
+        "seatsPerCourt" to pricing.seatsPerCourt,
+        "currency" to "TND",
+        "slotMinutes" to CourtSlots.SLOT_DURATION.toMinutes(),
+    )
+
+    // ── Participants (optional, never a payment) ──────────────────────────
+
+    /**
+     * Names a partner on a match the caller organised.
+     *
+     * Naming somebody is bookkeeping, not a transaction: the new row is always
+     * PENDING with no payment method, so no wallet is touched and nobody is
+     * recorded as having paid. A named partner does occupy a seat, which is
+     * what stops a fifth person joining a SHARE that already looks full.
+     *
+     * On a FULL booking the organiser has already covered the court, so the
+     * partners they name owe nothing (COVERED) rather than inventing four
+     * separate payments.
+     */
+    @PostMapping("/bookings/{bookingId}/participants")
+    @ResponseStatus(HttpStatus.CREATED)
+    @Transactional
+    fun addParticipant(
+        @PathVariable bookingId: UUID,
+        @RequestBody req: ParticipantInput,
+        @AuthenticationPrincipal claims: JwtService.Claims,
+    ): Map<String, Any?> {
+        val booking = bookings.findByIdForUpdate(bookingId)
+            .orElseThrow { NotFoundException("court_booking", bookingId) }
+        if (booking.userId != claims.userId)
+            throw BadRequestException("takeoff.forbidden", "Only the organiser can add players")
+        if (booking.status == BookingStatus.CANCELLED)
+            throw BadRequestException("takeoff.court.already_cancelled", "This match was cancelled")
+
+        val seated = players.findByBookingId(bookingId)
+        if (seated.size >= pricing.seatsPerCourt)
+            throw BadRequestException("takeoff.court.match_full", "All ${pricing.seatsPerCourt} places are taken")
+
+        val player = buildParticipant(booking, req, seated, addedByUserId = claims.userId)
+        players.save(player)
+        return participantDto(player)
+    }
+
+    /** Removes a partner the caller named. Frees the seat; refunds nothing. */
+    @DeleteMapping("/bookings/{bookingId}/participants/{participantId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @Transactional
+    fun removeParticipant(
+        @PathVariable bookingId: UUID,
+        @PathVariable participantId: UUID,
+        @AuthenticationPrincipal claims: JwtService.Claims,
+    ) {
+        val booking = bookings.findByIdForUpdate(bookingId)
+            .orElseThrow { NotFoundException("court_booking", bookingId) }
+        if (booking.userId != claims.userId)
+            throw BadRequestException("takeoff.forbidden", "Only the organiser can remove players")
+
+        val player = players.findById(participantId)
+            .filter { it.bookingId == bookingId }
+            .orElseThrow { NotFoundException("court_booking_player", participantId) }
+        if (player.userId != null && player.userId == booking.userId)
+            throw BadRequestException(
+                "takeoff.court.organiser_seat",
+                "The organiser cannot be removed — cancel the booking instead",
+            )
+        if (player.paymentStatus == PlayerPaymentStatus.PAID)
+            throw BadRequestException(
+                "takeoff.court.player_paid",
+                "This player has already paid; the club must handle the refund",
+            )
+        players.delete(player)
+    }
+
+    /** Everyone seated on a match the caller is part of. */
+    @GetMapping("/bookings/{bookingId}/participants")
+    fun listParticipants(
+        @PathVariable bookingId: UUID,
+        @AuthenticationPrincipal claims: JwtService.Claims,
+    ): List<Map<String, Any?>> {
+        val booking = bookings.findById(bookingId)
+            .orElseThrow { NotFoundException("court_booking", bookingId) }
+        val seated = players.findByBookingId(bookingId)
+        val involved = booking.userId == claims.userId || seated.any { it.userId == claims.userId }
+        if (!involved) throw NotFoundException("court_booking", bookingId)
+        return seated.map(::participantDto)
+    }
+
+    /** Resolves the input to a seat, rejecting duplicates and empty names. */
+    private fun buildParticipant(
+        booking: CourtBooking,
+        req: ParticipantInput,
+        seated: List<CourtBookingPlayer>,
+        addedByUserId: UUID?,
+    ): CourtBookingPlayer {
+        // A FULL booking is already covered by its organiser; a SHARE seat is
+        // owed by whoever takes it, and stays PENDING until they settle.
+        val full = booking.mode == BookingMode.FULL
+        val share = if (full) java.math.BigDecimal.ZERO else booking.priceDt
+
+        val phone = req.phone?.trim()?.takeIf { it.isNotBlank() }
+        if (phone != null) {
+            val user = userGateway.findByPhone(PhoneUtil.normalize(phone))
+                .orElseThrow {
+                    BadRequestException(
+                        "takeoff.court.unknown_member",
+                        "No member uses this number — add them by name instead",
+                    )
+                }
+            if (seated.any { it.userId == user.id })
+                throw BadRequestException("takeoff.court.duplicate_player", "This player is already on the match")
+            return CourtBookingPlayer(
+                bookingId = booking.id, userId = user.id, shareDt = share,
+                paymentStatus = if (full) PlayerPaymentStatus.COVERED else PlayerPaymentStatus.PENDING,
+                addedByUserId = addedByUserId,
+            )
+        }
+
+        val guest = req.guestName?.trim()?.takeIf { it.isNotBlank() }
+            ?: throw BadRequestException(
+                "takeoff.court.player_identity",
+                "Give the player's phone number or a name",
+            )
+        if (seated.any { it.guestName?.equals(guest, ignoreCase = true) == true })
+            throw BadRequestException("takeoff.court.duplicate_player", "This player is already on the match")
+        return CourtBookingPlayer(
+            bookingId = booking.id, userId = null, guestName = guest, shareDt = share,
+            paymentStatus = if (full) PlayerPaymentStatus.COVERED else PlayerPaymentStatus.PENDING,
+            addedByUserId = addedByUserId,
+        )
+    }
+
+    private fun participantDto(p: CourtBookingPlayer): Map<String, Any?> = mapOf(
+        "id" to p.id,
+        "userId" to p.userId,
+        "name" to (p.guestName ?: p.userId?.let { userGateway.findById(it).orElse(null)?.name }),
+        "isGuest" to (p.userId == null),
+        "shareDt" to p.shareDt,
+        "paymentStatus" to p.paymentStatus,
+    )
 
     // ── GET /api/v1/courts/bookings/mine ──────────────────────────────────
 
@@ -312,10 +486,16 @@ class MemberCourtController(
 
         val allPlayers = players.findByBookingId(bookingId)
         allPlayers
-            .filter { it.paymentStatus == PlayerPaymentStatus.PAID && it.paymentMethod == PlayerPaymentMethod.WALLET }
+            // A guest has no account and can never have paid from a wallet, so
+            // there is nothing to refund them.
+            .filter {
+                it.userId != null &&
+                    it.paymentStatus == PlayerPaymentStatus.PAID &&
+                    it.paymentMethod == PlayerPaymentMethod.WALLET
+            }
             .forEach { p ->
                 walletService.apply(
-                    userId = p.userId, delta = p.shareDt,
+                    userId = p.userId!!, delta = p.shareDt,
                     type = WalletEntryType.REFUND,
                     reason = if (p.userId == booking.userId) "court_booking_cancel" else "court_booking_share_cancel",
                     refType = "court_booking", refId = booking.id.toString(),

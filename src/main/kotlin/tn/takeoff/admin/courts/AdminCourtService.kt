@@ -157,8 +157,12 @@ class AdminCourtService(
         if (req.paymentStatus != null && req.paymentStatus != p.paymentStatus) {
             if (req.paymentStatus == PlayerPaymentStatus.PAID) {
                 if (req.paymentMethod == PlayerPaymentMethod.WALLET) {
+                    val payer = p.userId ?: throw BadRequestException(
+                        "takeoff.court.guest_wallet",
+                        "A guest has no wallet — record cash or card instead",
+                    )
                     walletService.apply(
-                        userId = p.userId, delta = p.shareDt.negate(), type = WalletEntryType.PAYMENT,
+                        userId = payer, delta = p.shareDt.negate(), type = WalletEntryType.PAYMENT,
                         reason = "Court booking share", adminId = adminId,
                         refType = "court_booking_player", refId = p.id.toString(),
                     )
@@ -233,10 +237,15 @@ class AdminCourtService(
         if (req.refundToWallet) {
             val allPlayers = players.findByBookingId(id)
             allPlayers
-                .filter { it.paymentStatus == PlayerPaymentStatus.PAID && it.paymentMethod == PlayerPaymentMethod.WALLET }
+                // Guests hold no wallet and can never have paid from one.
+                .filter {
+                    it.userId != null &&
+                        it.paymentStatus == PlayerPaymentStatus.PAID &&
+                        it.paymentMethod == PlayerPaymentMethod.WALLET
+                }
                 .forEach { p ->
                     walletService.apply(
-                        userId = p.userId, delta = p.shareDt,
+                        userId = p.userId!!, delta = p.shareDt,
                         type = WalletEntryType.REFUND,
                         reason = "Court booking cancelled: ${req.reason}",
                         adminId = adminId,
@@ -325,8 +334,11 @@ class AdminCourtService(
             b != null && b.status != BookingStatus.CANCELLED && b.startsAt < now
         }
         if (due.isEmpty()) return emptyList()
-        val userMap = userRepo.findAllById(due.map { it.userId }.toSet()).associateBy { it.id }
-        return due.groupBy { it.userId }.map { (uid, rows) ->
+        // Only member debts can be attributed to an account; guest tranches are
+        // settled at reception against the booking itself.
+        val owed = due.filter { it.userId != null }
+        val userMap = userRepo.findAllById(owed.mapNotNull { it.userId }.toSet()).associateBy { it.id }
+        return owed.groupBy { it.userId!! }.map { (uid, rows) ->
             ReceivableDto(
                 userId = uid,
                 userName = userMap[uid]?.name,

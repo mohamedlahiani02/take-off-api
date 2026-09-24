@@ -18,8 +18,20 @@ class CourtBookingPlayer(
     @Column(name = "booking_id", nullable = false)
     val bookingId: UUID,
 
-    @Column(name = "user_id", nullable = false)
-    val userId: UUID,
+    /**
+     * The member holding this seat, or null for a guest the organiser named.
+     * Exactly one of userId / guestName is set — enforced in the database.
+     */
+    @Column(name = "user_id")
+    var userId: UUID? = null,
+
+    /** Display name of a player who has no account. Never creates a user row. */
+    @Column(name = "guest_name")
+    var guestName: String? = null,
+
+    /** Member who added this participant, when it was not an admin. */
+    @Column(name = "added_by_user_id")
+    var addedByUserId: UUID? = null,
 
     @Column(name = "share_dt", precision = 10, scale = 3, nullable = false)
     var shareDt: BigDecimal,

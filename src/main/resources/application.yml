@@ -52,6 +52,12 @@ takeoff:
     enabled: ${SMS_ENABLED:false}
     brevo-api-key: ${BREVO_API_KEY:}
     sender: ${SMS_SENDER:TakeOff}
+  courts:
+    # Padel pricing. A full court is the whole booking; a share is one of its
+    # four seats. Authoritative here and exposed read-only through
+    # GET /api/v1/courts/pricing — the browser never decides what a booking costs.
+    full-price-dt: ${COURT_FULL_PRICE_DT:80.000}
+    seats-per-court: ${COURT_SEATS:4}
   auth:
     # US-3.2: when a phone matching a club-created (GHOST) account authenticates via
     # OTP, upgrade that account to ACTIVE (claim) so its history/debts/packs stay intact.

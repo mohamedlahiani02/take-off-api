@@ -34,7 +34,7 @@ enum class BookingPaymentState { UNPAID, PARTIAL, PAID }
 
 data class ParticipantDto(
     val id: UUID,
-    val userId: UUID,
+    val userId: UUID?,
     val userName: String?,
     val shareDt: BigDecimal,
     val paymentStatus: PlayerPaymentStatus,
@@ -44,7 +44,8 @@ data class ParticipantDto(
 ) {
     companion object {
         fun from(p: CourtBookingPlayer, userName: String? = null) = ParticipantDto(
-            id = p.id, userId = p.userId, userName = userName, shareDt = p.shareDt,
+            // A participant is either a member or a named guest.
+            id = p.id, userId = p.userId, userName = userName ?: p.guestName, shareDt = p.shareDt,
             paymentStatus = p.paymentStatus, paymentMethod = p.paymentMethod,
             paidAt = p.paidAt, noShow = p.noShow,
         )
@@ -189,7 +190,7 @@ data class UpdateParticipantRequest(
 
 /** US-3.4: one member's outstanding court debt. */
 data class ReceivableDto(
-    val userId: UUID,
+    val userId: UUID?,
     val userName: String?,
     val phone: String?,
     val totalDueDt: BigDecimal,
