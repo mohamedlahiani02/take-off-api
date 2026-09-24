@@ -24,6 +24,7 @@ class OrderService(
     private val variantRepo: ProductVariantRepository,
     private val walletService: WalletService,
     private val productGateway: ProductGateway,
+    private val packTypes: tn.takeoff.packs.PackTypeRepository,
 ) {
     companion object {
         private val TIMBRE_FISCAL = java.math.BigDecimal("1.000")
@@ -53,20 +54,34 @@ class OrderService(
         val user = userId?.let { userRepo.findById(it).orElse(null) }
         val ref = generateRef()
 
+        // Every line is priced from the catalogue. A client-supplied amount is
+        // only ever compared against it, so a stale or tampered cart cannot set
+        // its own price.
         val resolvedPrices = dto.items.map { item ->
-            if (item.productId != null) {
-                val product = productGateway.findById(item.productId).orElseThrow {
-                    BadRequestException("takeoff.product.not_found", "Product not found: ${item.productId}")
+            when {
+                item.productId != null -> {
+                    val product = productGateway.findById(item.productId).orElseThrow {
+                        BadRequestException("takeoff.product.not_found", "Product not found: ${item.productId}")
+                    }
+                    if (!product.isActive)
+                        throw BadRequestException("takeoff.product.inactive", "Product '${item.productName}' is not available")
+                    product.priceDt
                 }
-                if (!product.isActive)
-                    throw BadRequestException("takeoff.product.inactive", "Product '${item.productName}' is not available")
-                product.priceDt
-            } else {
-                if (item.unitPriceDt <= BigDecimal.ZERO)
-                    throw BadRequestException("takeoff.order.invalid_price", "Item price must be positive")
-                item.unitPriceDt
+                item.packTypeId != null -> {
+                    val pack = packTypes.findById(item.packTypeId).orElseThrow {
+                        BadRequestException("takeoff.pack.not_found", "Pack not found: ${item.packTypeId}")
+                    }
+                    if (!pack.active)
+                        throw BadRequestException("takeoff.pack.inactive", "Pack '${item.productName}' is not available")
+                    pack.priceDt
+                }
+                else -> throw BadRequestException(
+                    "takeoff.order.unpriced_item",
+                    "'${item.productName}' does not reference anything the club sells",
+                )
             }
         }
+
 
         val subtotal = dto.items.zip(resolvedPrices)
             .sumOf { (item, price) -> price.multiply(BigDecimal(item.qty)) }

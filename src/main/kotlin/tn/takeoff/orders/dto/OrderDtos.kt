@@ -13,9 +13,17 @@ import java.util.UUID
 
 data class CartItemInput(
     val productId: UUID? = null,
+    /**
+     * Service lines (a class pack, for now) name the catalogue entry they come
+     * from, so the server can price them. A line with neither productId nor a
+     * service reference has no authoritative price and is refused — previously
+     * such a line was charged at whatever the browser asked for.
+     */
+    val packTypeId: UUID? = null,
     @field:NotBlank val productName: String,
     @field:Min(1) val qty: Int = 1,
     val size: String? = null,
+    /** What the member was shown. Checked against the catalogue, never trusted. */
     @field:DecimalMin("0.001") val unitPriceDt: BigDecimal,
 )
 
