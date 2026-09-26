@@ -439,6 +439,9 @@ class MemberCourtController(
             .sortedByDescending { it.first.startsAt }
             .map { (b, isOrganizer) ->
                 val share = myShares[b.id]
+                val decision = CourtCancellation.forMember(
+                    b, claims.userId, isSeated = !isOrganizer && share != null,
+                )
                 mapOf(
                     "bookingId" to b.id, "courtId" to b.courtId,
                     "courtName" to (courtMap[b.courtId]?.name ?: "Court"),
@@ -448,6 +451,11 @@ class MemberCourtController(
                     "isOrganizer" to isOrganizer,
                     "myShareDt" to share?.shareDt,
                     "mySharePaymentStatus" to share?.paymentStatus,
+                    // Eligibility comes from the server so the button and the
+                    // endpoint can never disagree about the deadline.
+                    "canCancel" to decision.allowed,
+                    "cancelBlockedReason" to decision.reason,
+                    "cancelDeadline" to decision.deadline,
                 )
             }
     }
@@ -462,22 +470,30 @@ class MemberCourtController(
         @AuthenticationPrincipal claims: JwtService.Claims,
     ) {
         val booking = bookings.findByIdForUpdate(bookingId).orElseThrow { NotFoundException("court_booking", bookingId) }
-        if (booking.status == BookingStatus.CANCELLED)
-            throw BadRequestException("takeoff.court.already_cancelled", "Already cancelled")
+        val seat = players.findByBookingId(bookingId).firstOrNull { it.userId == claims.userId }
 
-        val hoursUntil = Duration.between(Instant.now(), booking.startsAt).toHours()
-        if (hoursUntil < 24)
-            throw BadRequestException("takeoff.court.cancel_too_late", "Cannot cancel less than 24 hours before the slot")
+        // One policy decides, so the button and the endpoint agree on the deadline.
+        val decision = CourtCancellation.forMember(
+            booking, claims.userId, isSeated = seat != null && booking.userId != claims.userId,
+        )
+        if (!decision.allowed) {
+            throw BadRequestException(
+                CourtCancellation.codeFor(decision.refusal!!),
+                decision.reason ?: "This match cannot be cancelled.",
+            )
+        }
 
         // Non-organizer participant leaving a shared match frees only their tranche (US-2.5).
         if (booking.userId != claims.userId) {
-            val mine = players.findByBookingId(bookingId).firstOrNull { it.userId == claims.userId }
-                ?: throw BadRequestException("takeoff.forbidden", "Not your booking")
+            val mine = seat!!
+            // Only a wallet payment can be refunded to a wallet. PAY_AT_CLUB was
+            // never collected, so leaving owes nothing back; anything settled by
+            // another means is refunded through that means, not as wallet credit.
             if (mine.paymentStatus == PlayerPaymentStatus.PAID && mine.paymentMethod == PlayerPaymentMethod.WALLET) {
-                walletService.apply(
+                walletService.applyOnce(
                     userId = claims.userId, delta = mine.shareDt,
                     type = WalletEntryType.REFUND, reason = "court_booking_share_cancel",
-                    refType = "court_booking", refId = booking.id.toString(),
+                    refType = "court_booking_player", refId = mine.id.toString(),
                 )
             }
             players.delete(mine)
@@ -487,18 +503,20 @@ class MemberCourtController(
         val allPlayers = players.findByBookingId(bookingId)
         allPlayers
             // A guest has no account and can never have paid from a wallet, so
-            // there is nothing to refund them.
+            // there is nothing to refund them. PAY_AT_CLUB was never collected.
             .filter {
                 it.userId != null &&
                     it.paymentStatus == PlayerPaymentStatus.PAID &&
                     it.paymentMethod == PlayerPaymentMethod.WALLET
             }
             .forEach { p ->
-                walletService.apply(
+                // Keyed on the seat, so each player is repaid exactly once even
+                // if a cancellation is retried or replayed.
+                walletService.applyOnce(
                     userId = p.userId!!, delta = p.shareDt,
                     type = WalletEntryType.REFUND,
                     reason = if (p.userId == booking.userId) "court_booking_cancel" else "court_booking_share_cancel",
-                    refType = "court_booking", refId = booking.id.toString(),
+                    refType = "court_booking_player", refId = p.id.toString(),
                 )
             }
 

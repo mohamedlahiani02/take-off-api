@@ -94,7 +94,10 @@ const GRID_MINUTES = (() => {
   return out
 })()
 
-let dayOffset = 40
+/* Each run books days no previous run touched: the database persists between
+   runs, so a fixed offset makes the second run collide with the first and
+   report slot_taken as if the code had regressed. */
+let dayOffset = 40 + Math.floor(Math.random() * 4000) * 3
 function nextSlot(gridIndex = 2) {
   const minutes = GRID_MINUTES[gridIndex % GRID_MINUTES.length]
   const d = new Date()
