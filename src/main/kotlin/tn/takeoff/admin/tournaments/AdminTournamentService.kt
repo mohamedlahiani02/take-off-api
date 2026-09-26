@@ -48,6 +48,7 @@ class AdminTournamentService(
 
     @Transactional
     fun create(req: TournamentRequest, adminId: UUID): Tournament {
+        rejectStatusInBody(req)
         val t = Tournament(
             title = req.title, description = req.description, bannerUrl = req.bannerUrl,
             format = req.format, category = req.category, startsAt = req.startsAt, endsAt = req.endsAt,
@@ -63,6 +64,7 @@ class AdminTournamentService(
 
     @Transactional
     fun update(id: UUID, req: TournamentRequest, adminId: UUID): Tournament {
+        rejectStatusInBody(req)
         val t = tournaments.findById(id).orElseThrow { NotFoundException("tournament", id) }
         t.title = req.title; t.description = req.description; t.bannerUrl = req.bannerUrl
         t.format = req.format; t.category = req.category; t.startsAt = req.startsAt; t.endsAt = req.endsAt
@@ -73,6 +75,21 @@ class AdminTournamentService(
         tournaments.save(t)
         auditService.log(adminId, "tournament.update", "tournament", id.toString())
         return t
+    }
+
+    /**
+     * TournamentRequest carries `status` only so it can be caught here: the
+     * create/update body is not how a tournament is published or finished —
+     * POST /{id}/status is, and only that path records who made the change.
+     */
+    private fun rejectStatusInBody(req: TournamentRequest) {
+        if (req.status != null) {
+            throw BadRequestException(
+                "takeoff.tournament.status_via_status_endpoint",
+                "status cannot be set here — use POST /admin/tournaments/{id}/status, " +
+                    "which records who changed it.",
+            )
+        }
     }
 
     @Transactional

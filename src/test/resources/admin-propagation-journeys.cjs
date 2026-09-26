@@ -57,15 +57,15 @@ async function main() {
     const created = await ok('POST', '/admin/tournaments', {
       title, description: 'Tournoi de propagation.', format: 'AMERICANO', category: 'MIXED',
       startsAt: '2027-03-14T09:00:00Z', entryFeeDt: 60, prize: '1000 DT',
-      maxParticipants: 16, registrationMode: 'OPEN', paymentRule: 'BOTH', status: 'PUBLISHED',
+      maxParticipants: 16, registrationMode: 'OPEN', paymentRule: 'BOTH',
     }, admin)
     const id = idOf(created)
     assert.ok(id, 'no id returned: ' + JSON.stringify(created).slice(0, 150))
 
-    // The body's status is discarded: create() never passes it, so a new
-    // tournament is always a draft. Publishing is a separate, deliberate act.
-    assert.equal(created.status, 'DRAFT',
-      'create() appears to honour a body status now — the publish step below may be redundant')
+    // status has no place in this body at all: create() rejects the field
+    // outright (P01b below), so a new tournament is always a draft. Publishing
+    // is a separate, deliberate act through the dedicated endpoint.
+    assert.equal(created.status, 'DRAFT', 'a new tournament must start as a draft')
     assert.ok(!(await ok('GET', '/tournaments')).some((t) => t.id === id),
       'an unpublished tournament must not be public')
 
@@ -86,11 +86,27 @@ async function main() {
     assert.equal(detail.title, title)
   })
 
+  await test('P01b', 'create/update refuse a status field in the body, by name', async () => {
+    const body = {
+      title: `Rejet ${stamp}`, format: 'AMERICANO', category: 'MIXED',
+      startsAt: '2027-03-20T09:00:00Z', entryFeeDt: 0,
+      registrationMode: 'OPEN', paymentRule: 'BOTH', status: 'PUBLISHED',
+    }
+    const r = await req('POST', '/admin/tournaments', body, admin)
+    assert.equal(r.status, 400, 'status in the create body must be refused, not silently dropped')
+    assert.match(String(r.data?.code ?? ''), /status/i)
+    // And the same on update, once the tournament exists without it.
+    const { status: _drop, ...withoutStatus } = body
+    const created = await ok('POST', '/admin/tournaments', withoutStatus, admin)
+    const r2 = await req('PUT', `/admin/tournaments/${idOf(created)}`, body, admin)
+    assert.equal(r2.status, 400, 'status in the update body must be refused too')
+  })
+
   await test('P02', 'A draft tournament stays off the public site', async () => {
     const created = await ok('POST', '/admin/tournaments', {
       title: `Brouillon ${stamp}`, format: 'AMERICANO', category: 'MIXED',
       startsAt: '2027-04-01T09:00:00Z', entryFeeDt: 0,
-      registrationMode: 'OPEN', paymentRule: 'BOTH', status: 'DRAFT',
+      registrationMode: 'OPEN', paymentRule: 'BOTH',
     }, admin)
     const id = idOf(created)
     const list = await ok('GET', '/tournaments')
@@ -103,13 +119,13 @@ async function main() {
     const created = await ok('POST', '/admin/tournaments', {
       title: `Avant ${stamp}`, format: 'AMERICANO', category: 'MIXED',
       startsAt: '2027-05-01T09:00:00Z', entryFeeDt: 0, prize: '500 DT',
-      registrationMode: 'OPEN', paymentRule: 'BOTH', status: 'PUBLISHED',
+      registrationMode: 'OPEN', paymentRule: 'BOTH',
     }, admin)
     const id = idOf(created)
     await ok('PUT', `/admin/tournaments/${id}`, {
       title: `Apres ${stamp}`, format: 'AMERICANO', category: 'MIXED',
       startsAt: '2027-05-01T09:00:00Z', entryFeeDt: 0, prize: '2000 DT',
-      registrationMode: 'OPEN', paymentRule: 'BOTH', status: 'PUBLISHED',
+      registrationMode: 'OPEN', paymentRule: 'BOTH',
     }, admin)
     await ok('POST', `/admin/tournaments/${id}/status`, { status: 'PUBLISHED' }, admin)
     const detail = await ok('GET', `/tournaments/${id}`)
@@ -121,7 +137,7 @@ async function main() {
     const body = {
       title: `Termine ${stamp}`, format: 'AMERICANO', category: 'MIXED',
       startsAt: '2027-06-01T09:00:00Z', entryFeeDt: 0,
-      registrationMode: 'OPEN', paymentRule: 'BOTH', status: 'PUBLISHED',
+      registrationMode: 'OPEN', paymentRule: 'BOTH',
     }
     const created = await ok('POST', '/admin/tournaments', body, admin)
     const id = idOf(created)

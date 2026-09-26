@@ -30,6 +30,15 @@ data class TournamentRequest(
     val autoWaitlist: Boolean = false,
     val manualValidation: Boolean = false,
     val paymentRule: PaymentRule = PaymentRule.BOTH,
+    /**
+     * Deliberately accepted (not silently dropped by Jackson) so it can be
+     * rejected with a clear message. create()/update() never apply this field
+     * — status changes go through POST /{id}/status, which is the only place
+     * that logs who changed it and why. A client that puts `status` in this
+     * body is trying to publish (or finish) a tournament without leaving that
+     * trail, so the request is refused rather than quietly doing nothing.
+     */
+    val status: TournamentStatus? = null,
 )
 
 data class StatusRequest(@field:NotNull val status: TournamentStatus)
