@@ -44,6 +44,7 @@ data class MemberRegistrationDto(
     val id: UUID,
     val tournamentId: UUID,
     val tournamentTitle: String? = null,
+    val startsAt: Instant? = null,
     val categoryLabel: String?,
     val answers: Map<String, Any>,
     val paymentStatus: RegPaymentStatus,
@@ -100,8 +101,8 @@ class MemberTournamentRegistrationController(
     fun mine(@AuthenticationPrincipal claims: JwtService.Claims): List<MemberRegistrationDto> {
         val regs = registrations.findByUserIdOrderByCreatedAtDesc(claims.userId)
         if (regs.isEmpty()) return emptyList()
-        val titles = tournaments.findAllById(regs.map { it.tournamentId }).associateBy({ it.id }, { it.title })
-        return regs.map { toDto(it, titles[it.tournamentId]) }
+        val byId = tournaments.findAllById(regs.map { it.tournamentId }).associateBy { it.id }
+        return regs.map { toDto(it, byId[it.tournamentId]?.title, byId[it.tournamentId]?.startsAt) }
     }
 
     @Transactional
@@ -246,12 +247,12 @@ class MemberTournamentRegistrationController(
             promo.uses += 1
             promoCodes.save(promo)
         }
-        return toDto(reg, t.title)
+        return toDto(reg, t.title, t.startsAt)
     }
 
-    private fun toDto(r: TournamentRegistration, title: String?) = MemberRegistrationDto(
-        id = r.id, tournamentId = r.tournamentId, tournamentTitle = title, categoryLabel = r.categoryLabel,
-        answers = r.answers, paymentStatus = r.paymentStatus, status = r.status, amountPaidDt = r.amountPaidDt,
-        createdAt = r.createdAt,
+    private fun toDto(r: TournamentRegistration, title: String? = null, startsAt: Instant? = null) = MemberRegistrationDto(
+        id = r.id, tournamentId = r.tournamentId, tournamentTitle = title, startsAt = startsAt,
+        categoryLabel = r.categoryLabel, answers = r.answers, paymentStatus = r.paymentStatus,
+        status = r.status, amountPaidDt = r.amountPaidDt, createdAt = r.createdAt,
     )
 }
