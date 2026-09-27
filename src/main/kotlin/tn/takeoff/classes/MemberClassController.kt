@@ -111,7 +111,18 @@ class MemberClassController(
 
     // ── Member class booking ─────────────────────────────────────────────────
 
-    data class BookRequest(@field:NotNull val sessionId: UUID)
+    /** Only WALLET is a real, operational payment method today. PAY_AT_CLUB is
+     *  deliberately not offered here: the club has made that call explicitly
+     *  for padel courts, and extending it to Pilates needs the same explicit
+     *  decision, not a silent copy-paste. */
+    enum class ClassPaymentMethod { WALLET }
+
+    data class BookRequest(
+        @field:NotNull val sessionId: UUID,
+        val paymentMethod: ClassPaymentMethod? = null,
+        // Echoed from what the recap screen showed; checked, never trusted.
+        val quotedPriceDt: BigDecimal? = null,
+    )
 
     @PostMapping("/bookings")
     @ResponseStatus(HttpStatus.CREATED)
@@ -155,13 +166,21 @@ class MemberClassController(
                 }
             }
 
-        val paidWith: PaidWith
-        val priceDt: BigDecimal
-        val userPackId: UUID?
+        var paidWith: PaidWith
+        var priceDt = BigDecimal.ZERO
+        var userPackId: UUID? = null
 
-        if (activePack != null && !isFull) {
+        // A confirmed spot requires one of three things actually having
+        // happened: a pack credit consumed, a valid unlimited subscription, or
+        // a payment actually collected. A waitlist entry is none of those —
+        // it must never look "booked" (no fake SINGLE charge that collects
+        // nothing, which is what used to happen here).
+        val booking = ClassBooking(sessionId = session.id, userId = claims.userId)
+
+        if (isFull) {
+            paidWith = PaidWith.WAITLIST
+        } else if (activePack != null) {
             paidWith = if (activePack.unlimited) PaidWith.UNLIMITED else PaidWith.PACK
-            priceDt = BigDecimal.ZERO
             userPackId = activePack.id
             if (!activePack.unlimited) {
                 val remaining = (activePack.creditsRemaining ?: 0) - 1
@@ -175,17 +194,35 @@ class MemberClassController(
                 ))
             }
         } else {
+            // No valid pack, and a real spot is open: only an actually
+            // collected payment confirms it. Wallet is the only operational
+            // method — see ClassPaymentMethod.
+            if (req.paymentMethod != ClassPaymentMethod.WALLET) {
+                throw BadRequestException(
+                    "takeoff.class.payment_required",
+                    "No valid pack for this class — choose a payment method to confirm this booking",
+                )
+            }
+            if (req.quotedPriceDt != null && req.quotedPriceDt.compareTo(session.priceDt) != 0) {
+                throw BadRequestException("takeoff.class.price_mismatch", "The price has changed — reload and confirm again")
+            }
+            // Keyed on the booking's own id (generated above, before insert):
+            // idempotent against a retried request for the same attempt, on
+            // top of the session-row lock above already serialising concurrent
+            // attempts by the same member.
+            walletService.applyOnce(
+                userId = claims.userId, delta = session.priceDt.negate(), type = WalletEntryType.PAYMENT,
+                reason = "class_single_session", refType = "class_booking", refId = booking.id.toString(),
+            )
             paidWith = PaidWith.SINGLE
             priceDt = session.priceDt
-            userPackId = null
         }
 
-        val booking = ClassBooking(
-            sessionId = session.id, userId = claims.userId,
-            status = if (isFull) ClassBookingStatus.WAITLIST else ClassBookingStatus.BOOKED,
-            paidWith = paidWith, userPackId = userPackId, priceDt = priceDt,
-            waitlistPosition = waitlistPos,
-        )
+        booking.status = if (isFull) ClassBookingStatus.WAITLIST else ClassBookingStatus.BOOKED
+        booking.paidWith = paidWith
+        booking.userPackId = userPackId
+        booking.priceDt = priceDt
+        booking.waitlistPosition = waitlistPos
         bookings.save(booking)
 
         return mapOf(

@@ -39,7 +39,7 @@ class ClassSession(
 )
 
 enum class ClassBookingStatus { BOOKED, WAITLIST, CANCELLED, ATTENDED, ABSENT, LATE_CANCEL }
-enum class PaidWith { SINGLE, PACK, UNLIMITED, COMP }
+enum class PaidWith { SINGLE, PACK, UNLIMITED, COMP, WAITLIST }
 
 @Entity
 @Table(name = "class_bookings")

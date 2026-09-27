@@ -23,6 +23,7 @@ interface ClassSessionRepository : JpaRepository<ClassSession, UUID> {
 
 interface ClassBookingRepository : JpaRepository<ClassBooking, UUID> {
     fun findBySessionId(sessionId: UUID): List<ClassBooking>
+    fun findByPaidWithAndStatusIn(paidWith: PaidWith, statuses: List<ClassBookingStatus>): List<ClassBooking>
     fun countBySessionIdAndStatus(sessionId: UUID, status: ClassBookingStatus): Long
     fun findByUserIdOrderByCreatedAtDesc(userId: UUID): List<ClassBooking>
 }

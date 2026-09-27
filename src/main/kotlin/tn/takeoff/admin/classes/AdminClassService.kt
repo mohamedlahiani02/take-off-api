@@ -10,8 +10,12 @@ import tn.takeoff.coaches.CoachRepository
 import tn.takeoff.packs.CreditEntryType
 import tn.takeoff.packs.PackCreditLedger
 import tn.takeoff.packs.PackCreditLedgerRepository
+import tn.takeoff.packs.PackActivity
+import tn.takeoff.packs.PackTypeRepository
 import tn.takeoff.packs.UserPackRepository
 import tn.takeoff.packs.UserPackStatus
+import tn.takeoff.users.WalletEntryType
+import tn.takeoff.users.WalletService
 import tn.takeoff.common.errors.BadRequestException
 import tn.takeoff.common.errors.ConflictException
 import tn.takeoff.common.errors.NotFoundException
@@ -49,7 +53,46 @@ class AdminClassService(
     private val adminUserService: AdminUserService,
     private val auditService: AuditService,
     private val coaches: CoachRepository,
+    private val walletLedger: tn.takeoff.users.WalletLedgerRepository,
+    private val userRepo: tn.takeoff.users.UserRepository,
+    private val packTypes: PackTypeRepository,
+    private val walletService: WalletService,
 ) {
+    /**
+     * Bookings the old logic marked BOOKED/paidWith=SINGLE without ever
+     * collecting anything (no wallet debit exists for them). Read-only: this
+     * never charges retroactively — a member never gets a surprise debit for
+     * a spot they were told, at the time, was simply theirs. It only surfaces
+     * the list so the club can decide case by case (waive, invoice, call).
+     */
+    fun unpaidLegacySingleBookings(): List<tn.takeoff.admin.classes.UnpaidLegacyBookingDto> {
+        val candidates = bookings.findByPaidWithAndStatusIn(
+            tn.takeoff.classes.PaidWith.SINGLE,
+            listOf(tn.takeoff.classes.ClassBookingStatus.BOOKED, tn.takeoff.classes.ClassBookingStatus.ATTENDED),
+        ).filter { it.priceDt > java.math.BigDecimal.ZERO && it.userId != null }
+
+        val unpaid = candidates.filter { b ->
+            !walletLedger.existsByUserIdAndTypeAndRefTypeAndRefId(
+                b.userId!!, tn.takeoff.users.WalletEntryType.PAYMENT, "class_booking", b.id.toString(),
+            )
+        }
+        if (unpaid.isEmpty()) return emptyList()
+
+        val sessionIds = unpaid.map { it.sessionId }.toSet()
+        val sessionsById = sessions.findAllById(sessionIds).associateBy { it.id }
+        val userIds = unpaid.mapNotNull { it.userId }.toSet()
+        val usersById = userRepo.findAllById(userIds).associateBy { it.id }
+
+        return unpaid.map { b ->
+            val session = sessionsById[b.sessionId]
+            val user = usersById[b.userId]
+            tn.takeoff.admin.classes.UnpaidLegacyBookingDto(
+                bookingId = b.id, sessionId = b.sessionId, startsAt = session?.startsAt,
+                userId = b.userId, userName = user?.name, userPhone = user?.phone,
+                priceDt = b.priceDt, createdAt = b.createdAt,
+            )
+        }
+    }
 
     // ── class types ──
     fun listTypes(): List<ClassType> = types.findAllByOrderByDisplayOrder()
@@ -186,6 +229,15 @@ class AdminClassService(
     }
 
     /** E-07: promote a waitlisted booking to BOOKED. */
+    /**
+     * A waitlisted booking was never charged (correctly — a waitlist spot is
+     * not a spot). Promoting it to BOOKED must resolve real payment the same
+     * way a fresh booking does, or the member gets a free class: check for a
+     * pack valid right now, consuming a credit; otherwise charge the wallet.
+     * If neither works, the promotion itself fails (transaction rolls back)
+     * rather than granting the spot for nothing — the admin sees why and can
+     * decide (chase the member, use a manual override).
+     */
     @Transactional
     fun promote(bookingId: UUID, adminId: UUID): ClassBooking {
         val b = bookings.findById(bookingId).orElseThrow { NotFoundException("class_booking", bookingId) }
@@ -194,9 +246,45 @@ class AdminClassService(
         val bookedCount = bookings.countBySessionIdAndStatus(b.sessionId, ClassBookingStatus.BOOKED)
         if (bookedCount >= session.maxSpots)
             throw BadRequestException("takeoff.class.full", "Session is already full")
+        val userId = b.userId ?: throw BadRequestException("takeoff.class.no_user", "Waitlisted booking has no member")
+
+        val activePack = userPacks.findByUserIdOrderByPurchasedAtDesc(userId).firstOrNull {
+            it.status == UserPackStatus.ACTIVE && it.expiresAt.isAfter(Instant.now()) &&
+                (it.unlimited || (it.creditsRemaining ?: 0) > 0) &&
+                packTypes.findById(it.packTypeId).map { pt -> pt.activity == PackActivity.PILATES }.orElse(false)
+        }
+
+        if (activePack != null) {
+            b.paidWith = if (activePack.unlimited) PaidWith.UNLIMITED else PaidWith.PACK
+            b.userPackId = activePack.id
+            b.priceDt = BigDecimal.ZERO
+            if (!activePack.unlimited) {
+                val remaining = (activePack.creditsRemaining ?: 0) - 1
+                activePack.creditsRemaining = remaining
+                if (remaining <= 0) activePack.status = UserPackStatus.EXPIRED
+                userPacks.save(activePack)
+                ledger.save(PackCreditLedger(
+                    userPackId = activePack.id, delta = -1,
+                    type = CreditEntryType.CONSUME, reason = "class_booking_promote",
+                    refType = "class_session", refId = session.id.toString(),
+                ))
+            }
+        } else {
+            // No valid pack: the wallet is charged, same as a fresh SINGLE
+            // booking. If funds are insufficient this throws and the whole
+            // promotion rolls back — the spot stays on the waitlist rather
+            // than becoming free.
+            walletService.applyOnce(
+                userId = userId, delta = session.priceDt.negate(), type = WalletEntryType.PAYMENT,
+                reason = "class_single_session", refType = "class_booking", refId = b.id.toString(),
+            )
+            b.paidWith = PaidWith.SINGLE
+            b.priceDt = session.priceDt
+        }
+
         b.status = ClassBookingStatus.BOOKED; b.waitlistPosition = null; b.updatedAt = Instant.now()
         bookings.save(b)
-        auditService.log(adminId, "class.promote", "class_booking", bookingId.toString())
+        auditService.log(adminId, "class.promote", "class_booking", bookingId.toString(), mapOf("paidWith" to b.paidWith.name))
         return b
     }
 

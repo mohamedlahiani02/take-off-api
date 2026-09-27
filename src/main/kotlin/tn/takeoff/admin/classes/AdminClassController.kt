@@ -34,6 +34,11 @@ class AdminClassController(private val service: AdminClassService) {
     @GetMapping("/sessions/{id}")
     fun sessionDetail(@PathVariable id: UUID): SessionDetail = service.sessionDetail(id)
 
+    /** Read-only: legacy BOOKED/SINGLE bookings never actually paid for. Never
+     *  charges retroactively — see AdminClassService.unpaidLegacySingleBookings. */
+    @GetMapping("/bookings/unpaid-legacy")
+    fun unpaidLegacy(): List<UnpaidLegacyBookingDto> = service.unpaidLegacySingleBookings()
+
     @PostMapping("/sessions")
     fun createSession(@Valid @RequestBody req: SessionRequest, @AuthenticationPrincipal a: JwtService.AdminClaims): ClassSession =
         service.createSession(req, a.adminId)

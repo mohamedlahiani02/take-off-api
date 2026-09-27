@@ -34,3 +34,14 @@ data class AddStudentRequest(
 )
 
 data class AttendanceRequest(@field:NotNull val status: ClassBookingStatus)
+
+data class UnpaidLegacyBookingDto(
+    val bookingId: UUID,
+    val sessionId: UUID,
+    val startsAt: Instant?,
+    val userId: UUID?,
+    val userName: String?,
+    val userPhone: String?,
+    val priceDt: BigDecimal,
+    val createdAt: Instant,
+)
