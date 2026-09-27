@@ -28,6 +28,7 @@ class MemberCourtController(
     private val bookings: CourtBookingRepository,
     private val blocks: CourtBlockRepository,
     private val players: CourtBookingPlayerRepository,
+    private val guestPayments: CourtBookingPaymentRepository,
     private val walletService: WalletService,
     private val jwtService: JwtService,
     private val pricing: CourtPricing,
@@ -71,6 +72,13 @@ class MemberCourtController(
         val playerCounts = if (confirmedBookings.isEmpty()) emptyMap()
         else players.findByBookingIdIn(confirmedBookings.map { it.id })
             .groupingBy { it.bookingId }.eachCount()
+        // A guest cash-in covering several remaining seats reserves them too, so
+        // a lump payment at the desk does not leave those seats bookable online
+        // by someone else with no idea they were just paid for.
+        val coveredSeatCounts = if (confirmedBookings.isEmpty()) emptyMap()
+        else guestPayments.findByBookingIdInAndVoidedFalse(confirmedBookings.map { it.id })
+            .groupBy { it.bookingId }
+            .mapValues { (_, ps) -> ps.sumOf { it.coveredSeats } }
 
         val allCourtBlocks = blocks.findByCourtId(id)
         // Java DayOfWeek: MON=1..SUN=7 → convert to 0=Sun..6=Sat to match recurringDow
@@ -83,12 +91,14 @@ class MemberCourtController(
             val overlapping = confirmedBookings.filter { b -> b.startsAt < slotEnd && b.endsAt > slotStart }
             if (overlapping.isNotEmpty()) {
                 // A shared match with free tranches is joinable, not "taken" (US-1.1).
+                fun occupiedSeats(bookingId: java.util.UUID) =
+                    (playerCounts[bookingId] ?: 1) + (coveredSeatCounts[bookingId] ?: 0)
                 val openShare = overlapping
                     .filter { it.mode == BookingMode.SHARE }
                     .takeIf { it.size == overlapping.size } // no FULL booking in the slot
-                    ?.firstOrNull { (playerCounts[it.id] ?: 1) < 4 }
+                    ?.firstOrNull { occupiedSeats(it.id) < 4 }
                 if (openShare != null) {
-                    return@map SlotDto(slotStart, slotEnd, true, "SHARE_OPEN", 4 - (playerCounts[openShare.id] ?: 1))
+                    return@map SlotDto(slotStart, slotEnd, true, "SHARE_OPEN", 4 - occupiedSeats(openShare.id))
                 }
                 return@map SlotDto(slotStart, slotEnd, false, "BOOKED")
             }

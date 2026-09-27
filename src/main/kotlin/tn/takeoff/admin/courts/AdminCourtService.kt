@@ -15,8 +15,11 @@ import tn.takeoff.courts.CourtBlock
 import tn.takeoff.courts.CourtBlockRepository
 import tn.takeoff.courts.CourtBooking
 import tn.takeoff.courts.CourtBookingRepository
+import tn.takeoff.courts.CourtBookingPayment
+import tn.takeoff.courts.CourtBookingPaymentRepository
 import tn.takeoff.courts.CourtBookingPlayer
 import tn.takeoff.courts.CourtBookingPlayerRepository
+import tn.takeoff.courts.CourtPricing
 import tn.takeoff.courts.CourtPaymentMethod
 import tn.takeoff.courts.CourtPaymentStatus
 import tn.takeoff.courts.CourtRepository
@@ -35,6 +38,8 @@ class AdminCourtService(
     private val bookings: CourtBookingRepository,
     private val blocks: CourtBlockRepository,
     private val players: CourtBookingPlayerRepository,
+    private val guestPayments: CourtBookingPaymentRepository,
+    private val pricing: CourtPricing,
     private val adminUserService: AdminUserService,
     private val userRepo: UserRepository,
     private val walletService: WalletService,
@@ -46,6 +51,8 @@ class AdminCourtService(
         val calBookings = bookings.findByStartsAtGreaterThanEqualAndStartsAtLessThan(from, to)
         val playersByBooking = if (calBookings.isEmpty()) emptyMap()
         else players.findByBookingIdIn(calBookings.map { it.id }).groupBy { it.bookingId }
+        val paymentsByBooking = if (calBookings.isEmpty()) emptyMap()
+        else guestPayments.findByBookingIdInAndVoidedFalse(calBookings.map { it.id }).groupBy { it.bookingId }
         val userIds = calBookings.mapNotNull { it.userId }.toSet() +
             playersByBooking.values.flatten().map { it.userId }
         val userNames = if (userIds.isEmpty()) emptyMap()
@@ -53,7 +60,10 @@ class AdminCourtService(
         return CalendarDto(
             courts = courts.findByActiveOrderByDisplayOrder(true).map(CourtDto::from),
             bookings = calBookings.map {
-                BookingDto.from(it, userNames[it.userId], playersByBooking[it.id] ?: emptyList(), userNames)
+                BookingDto.from(
+                    it, userNames[it.userId], playersByBooking[it.id] ?: emptyList(), userNames,
+                    paymentsByBooking[it.id] ?: emptyList(), totalDueFor(it),
+                )
             },
             blocks = blocks.findByStartsAtGreaterThanEqualAndStartsAtLessThan(from, to).map(BlockDto::from),
         )
@@ -198,6 +208,94 @@ class AdminCourtService(
         players.delete(p)
         syncBookingPaymentState(b)
         auditService.log(adminId, "court.participant_remove", "court_booking_player", participantId.toString())
+        return dtoWithPlayers(b)
+    }
+
+    /**
+     * Admin collects a lump payment from someone at the desk (a guest, a
+     * partial settlement, whatever cash actually changed hands) against a
+     * confirmed booking's remaining balance. Locks the booking row so two
+     * concurrent collections against the same balance cannot both succeed
+     * (the same guard already used for booking creation).
+     */
+    @Transactional
+    fun addGuestPayment(bookingId: UUID, req: AddGuestPaymentRequest, adminId: UUID): BookingDto {
+        val b = bookings.findByIdForUpdate(bookingId).orElseThrow { NotFoundException("court_booking", bookingId) }
+        if (b.status == BookingStatus.CANCELLED) {
+            throw ConflictException("takeoff.booking.cancelled", "Booking is cancelled")
+        }
+        if (req.amountDt <= java.math.BigDecimal.ZERO) {
+            throw BadRequestException("takeoff.court.guest_payment_invalid", "Amount must be positive")
+        }
+
+        val ps = players.findByBookingId(bookingId)
+        val active = guestPayments.findByBookingIdOrderByCreatedAtDesc(bookingId).filter { !it.voided }
+
+        // Structural validity first: whether coveredSeats makes sense at all
+        // does not depend on the balance, and should not be masked by an
+        // unrelated "amount exceeds due" rejection.
+        if (req.coveredSeats > 0) {
+            if (b.mode != BookingMode.SHARE) {
+                throw BadRequestException("takeoff.court.guest_payment_seats_not_applicable", "coveredSeats only applies to SHARE bookings")
+            }
+            val coveredByOthers = active.sumOf { it.coveredSeats }
+            val openForSale = (BookingDto.SHARE_SLOTS - ps.size - coveredByOthers).coerceAtLeast(0)
+            if (req.coveredSeats > openForSale) {
+                throw BadRequestException(
+                    "takeoff.court.guest_payment_seats_exceed_open",
+                    "Only $openForSale seat(s) are open — cannot cover ${req.coveredSeats}",
+                )
+            }
+        }
+
+        val totalDue = totalDueFor(b)
+        val collected = ps
+            .filter { it.paymentStatus == PlayerPaymentStatus.PAID || it.paymentStatus == PlayerPaymentStatus.COVERED }
+            .fold(java.math.BigDecimal.ZERO) { acc, p -> acc.add(p.shareDt) }
+            .add(active.fold(java.math.BigDecimal.ZERO) { acc, p -> acc.add(p.amountDt) })
+        val remaining = totalDue.subtract(collected)
+        if (req.amountDt > remaining) {
+            throw BadRequestException(
+                "takeoff.court.guest_payment_exceeds_due",
+                "Amount exceeds what is still due (remaining: $remaining DT)",
+            )
+        }
+
+        val payment = CourtBookingPayment(
+            bookingId = bookingId, amountDt = req.amountDt, method = req.method, payerName = req.payerName,
+            coveredSeats = req.coveredSeats, reference = req.reference, collectedByAdminId = adminId,
+        )
+        guestPayments.save(payment)
+        auditService.log(
+            adminId, "court.guest_payment", "court_booking_payment", payment.id.toString(),
+            mapOf("amountDt" to req.amountDt.toString(), "coveredSeats" to req.coveredSeats.toString(), "method" to req.method.name),
+        )
+        return dtoWithPlayers(b)
+    }
+
+    /**
+     * Corrects a mistaken or disputed cash-in. Never deletes the row — the
+     * amount is excluded from totals going forward, but the record (who
+     * collected it, and now who voided it and why) stays for audit. This is a
+     * bookkeeping correction only: any actual cash refund happens physically
+     * at the club, and voiding never credits a wallet (there is no guest
+     * wallet to credit).
+     */
+    @Transactional
+    fun voidGuestPayment(bookingId: UUID, paymentId: UUID, req: VoidGuestPaymentRequest, adminId: UUID): BookingDto {
+        val b = bookings.findByIdForUpdate(bookingId).orElseThrow { NotFoundException("court_booking", bookingId) }
+        val payment = guestPayments.findById(paymentId)
+            .filter { it.bookingId == bookingId }
+            .orElseThrow { NotFoundException("court_booking_payment", paymentId) }
+        if (payment.voided) {
+            throw ConflictException("takeoff.court.guest_payment_already_voided", "This payment was already voided")
+        }
+        payment.voided = true
+        payment.voidedByAdminId = adminId
+        payment.voidedAt = Instant.now()
+        payment.voidReason = req.reason
+        guestPayments.save(payment)
+        auditService.log(adminId, "court.guest_payment_void", "court_booking_payment", paymentId.toString(), mapOf("reason" to req.reason))
         return dtoWithPlayers(b)
     }
 
@@ -371,12 +469,18 @@ class AdminCourtService(
     // ── helpers ──
 
     /** Booking DTO with participant rows + display names resolved. */
+    /** The whole court's value, independent of mode: the organiser's own tranche
+     *  on a FULL booking already equals it; a SHARE booking's is 4 seats worth. */
+    private fun totalDueFor(b: CourtBooking): java.math.BigDecimal =
+        if (b.mode == BookingMode.SHARE) pricing.fullPrice() else b.priceDt
+
     private fun dtoWithPlayers(b: CourtBooking): BookingDto {
         val ps = players.findByBookingId(b.id)
         val ids = (ps.map { it.userId } + listOfNotNull(b.userId)).toSet()
         val names = if (ids.isEmpty()) emptyMap()
         else userRepo.findAllById(ids).associate { it.id to it.name }
-        return BookingDto.from(b, names[b.userId], ps, names)
+        val payments = guestPayments.findByBookingIdOrderByCreatedAtDesc(b.id)
+        return BookingDto.from(b, names[b.userId], ps, names, payments, totalDueFor(b))
     }
 
     /** SHARE booking flips to PAID once all 4 tranches are settled (auto, reversible via P-02). */

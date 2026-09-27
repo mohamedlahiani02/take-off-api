@@ -7,7 +7,9 @@ import tn.takeoff.courts.BookingStatus
 import tn.takeoff.courts.Court
 import tn.takeoff.courts.CourtBlock
 import tn.takeoff.courts.CourtBooking
+import tn.takeoff.courts.CourtBookingPayment
 import tn.takeoff.courts.CourtBookingPlayer
+import tn.takeoff.courts.GuestPaymentMethod
 import tn.takeoff.courts.CourtPaymentMethod
 import tn.takeoff.courts.CourtPaymentStatus
 import tn.takeoff.courts.PlayerPaymentMethod
@@ -52,6 +54,31 @@ data class ParticipantDto(
     }
 }
 
+/**
+ * Money collected against a booking with no named seat behind it (a guest
+ * covering several remaining tranches at once). Kept distinct from
+ * ParticipantDto: this is a payment record, not an identity.
+ */
+data class GuestPaymentDto(
+    val id: UUID,
+    val amountDt: BigDecimal,
+    val method: GuestPaymentMethod,
+    val payerName: String?,
+    val coveredSeats: Int,
+    val reference: String?,
+    val voided: Boolean,
+    val voidReason: String?,
+    val createdAt: Instant,
+) {
+    companion object {
+        fun from(p: CourtBookingPayment) = GuestPaymentDto(
+            id = p.id, amountDt = p.amountDt, method = p.method, payerName = p.payerName,
+            coveredSeats = p.coveredSeats, reference = p.reference, voided = p.voided,
+            voidReason = p.voidReason, createdAt = p.createdAt,
+        )
+    }
+}
+
 data class BookingDto(
     val id: UUID,
     val courtId: UUID,
@@ -66,41 +93,88 @@ data class BookingDto(
     val status: BookingStatus,
     val cancelReason: String?,
     val participants: List<ParticipantDto> = emptyList(),
+    val guestPayments: List<GuestPaymentDto> = emptyList(),
     val paymentState: BookingPaymentState = BookingPaymentState.UNPAID,
-    val paidCount: Int = 0,
-    val totalSlots: Int = 1,
+    /** What the whole court is worth, independent of mode (FULL or all 4 SHARE seats). */
+    val totalDueDt: BigDecimal = BigDecimal.ZERO,
+    /** What has actually been collected: settled seats + active guest payments. */
+    val totalCollectedDt: BigDecimal = BigDecimal.ZERO,
+    val seatsOpenForSale: Int = 0,
 ) {
     companion object {
         // A padel SHARE booking is a 4-player match; FULL (or non-padel) is a single payer.
         const val SHARE_SLOTS = 4
 
+        /**
+         * `totalDueDt` is the whole court's value (pass CourtPricing.fullPrice()
+         * for a SHARE booking; for FULL, `b.priceDt` already equals it — the
+         * organiser's own tranche IS the whole court).
+         *
+         * paymentState is computed from money actually collected, not a count of
+         * settled seats: a guest's lump cash-in covers seats with no player row
+         * behind them at all, so counting settled *players* would show a fully
+         * paid court as forever partial.
+         */
         fun from(
             b: CourtBooking,
             userName: String? = null,
             players: List<CourtBookingPlayer> = emptyList(),
             playerNames: Map<UUID, String> = emptyMap(),
+            guestPayments: List<CourtBookingPayment> = emptyList(),
+            totalDueDt: BigDecimal = b.priceDt,
         ): BookingDto {
             val slots = if (b.mode == BookingMode.SHARE) SHARE_SLOTS else 1
-            val settled = players.count { it.paymentStatus != PlayerPaymentStatus.PENDING }
+            val activePayments = guestPayments.filter { !it.voided }
+
+            val fromPlayers = players
+                .filter { it.paymentStatus == PlayerPaymentStatus.PAID || it.paymentStatus == PlayerPaymentStatus.COVERED }
+                .fold(BigDecimal.ZERO) { acc, p -> acc.add(p.shareDt) }
+            val fromGuests = activePayments.fold(BigDecimal.ZERO) { acc, p -> acc.add(p.amountDt) }
+            val collected = fromPlayers.add(fromGuests)
+
             val state = when {
-                b.paymentStatus == CourtPaymentStatus.PAID -> BookingPaymentState.PAID
-                settled == 0 -> BookingPaymentState.UNPAID
-                settled >= slots -> BookingPaymentState.PAID
-                else -> BookingPaymentState.PARTIAL
+                collected >= totalDueDt && totalDueDt > BigDecimal.ZERO -> BookingPaymentState.PAID
+                collected > BigDecimal.ZERO -> BookingPaymentState.PARTIAL
+                else -> BookingPaymentState.UNPAID
             }
+
+            val coveredByGuests = activePayments.sumOf { it.coveredSeats }
+            val openForSale = if (b.mode == BookingMode.SHARE) (slots - players.size - coveredByGuests).coerceAtLeast(0) else 0
+
             return BookingDto(
                 id = b.id, courtId = b.courtId, userId = b.userId, userName = userName,
                 startsAt = b.startsAt, endsAt = b.endsAt, mode = b.mode,
                 priceDt = b.priceDt, paymentStatus = b.paymentStatus,
                 paymentMethod = b.paymentMethod, status = b.status, cancelReason = b.cancelReason,
                 participants = players.map { ParticipantDto.from(it, playerNames[it.userId]) },
+                guestPayments = guestPayments.map(GuestPaymentDto::from),
                 paymentState = state,
-                paidCount = settled,
-                totalSlots = slots,
+                totalDueDt = totalDueDt,
+                totalCollectedDt = collected,
+                seatsOpenForSale = openForSale,
             )
         }
     }
 }
+
+/**
+ * Admin collects cash (or card/D17) from someone at the desk for the
+ * remaining balance of a booking — a guest with no account, possibly
+ * covering several friends' seats in one payment. `coveredSeats` reserves
+ * that many open seats so they stop being offered for booking; leave it 0 for
+ * a payment that is just money with no seat claim (or on a FULL booking,
+ * which has no seats to reserve).
+ */
+data class AddGuestPaymentRequest(
+    @field:NotNull val amountDt: BigDecimal,
+    @field:NotNull val method: tn.takeoff.courts.GuestPaymentMethod,
+    val payerName: String? = null,
+    val coveredSeats: Int = 0,
+    val reference: String? = null,
+)
+
+/** Corrections are traced, never a silent delete — reason is mandatory. */
+data class VoidGuestPaymentRequest(@field:NotBlank val reason: String)
 
 data class BlockDto(
     val id: UUID,

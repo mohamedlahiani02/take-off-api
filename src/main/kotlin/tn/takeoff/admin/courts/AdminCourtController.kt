@@ -60,6 +60,24 @@ class AdminCourtController(private val service: AdminCourtService) {
         @AuthenticationPrincipal admin: JwtService.AdminClaims,
     ): BookingDto = service.removeParticipant(id, participantId, admin.adminId)
 
+    /** Admin collects a lump cash/card/D17 payment at the desk (e.g. a guest
+     *  settling the remaining balance) — no account or phone required. */
+    @PostMapping("/bookings/{id}/guest-payments")
+    fun addGuestPayment(
+        @PathVariable id: UUID,
+        @Valid @RequestBody req: AddGuestPaymentRequest,
+        @AuthenticationPrincipal admin: JwtService.AdminClaims,
+    ): BookingDto = service.addGuestPayment(id, req, admin.adminId)
+
+    /** Corrects a mistaken guest payment — traced, never silently deleted. */
+    @PostMapping("/bookings/{id}/guest-payments/{paymentId}/void")
+    fun voidGuestPayment(
+        @PathVariable id: UUID,
+        @PathVariable paymentId: UUID,
+        @Valid @RequestBody req: VoidGuestPaymentRequest,
+        @AuthenticationPrincipal admin: JwtService.AdminClaims,
+    ): BookingDto = service.voidGuestPayment(id, paymentId, req, admin.adminId)
+
     /** P-04: organizer covers the remaining tranches. */
     @PostMapping("/bookings/{id}/cover-all")
     fun coverAll(
