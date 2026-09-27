@@ -21,6 +21,11 @@ data class PublicTournamentDto(
     val maxParticipants: Int?,
     val registrationDeadline: Instant?,
     val currentRegistrations: Long,
+    // The registration form needs to know which payment methods to offer
+    // before the member gets to the recap screen — the server still enforces
+    // this regardless, but guessing wastes a round trip on a refusal.
+    val paymentRule: PaymentRule,
+    val registrationMode: RegistrationMode,
 )
 
 @RestController
@@ -60,5 +65,7 @@ class MemberTournamentController(
                     maxParticipants = t.maxParticipants,
                     registrationDeadline = t.registrationDeadline,
                     currentRegistrations = registrations.countByTournamentIdAndStatus(t.id, RegStatus.CONFIRMED),
+                    paymentRule = t.paymentRule,
+                    registrationMode = t.registrationMode,
                 )
 }
