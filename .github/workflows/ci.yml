@@ -51,3 +51,106 @@ jobs:
 
       - name: Build & test
         run: ./gradlew test bootJar --no-daemon -q
+
+  business-journeys:
+    name: Business calendar journeys (real backend, synthetic DB)
+    runs-on: ubuntu-24.04
+    needs: ci
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: takeoff_journeys
+          POSTGRES_USER: takeoff
+          POSTGRES_PASSWORD: takeoff
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U takeoff -d takeoff_journeys"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/takeoff_journeys
+      SPRING_DATASOURCE_USERNAME: takeoff
+      SPRING_DATASOURCE_PASSWORD: takeoff
+      JWT_PRIVATE_KEY_PATH: /tmp/jwt.private.pem
+      JWT_PUBLIC_KEY_PATH: /tmp/jwt.public.pem
+      PORT: 18081
+      SERVER_ADDRESS: 127.0.0.1
+      ADMIN_EMAIL: ci-admin@example.test
+      ADMIN_PASSWORD: Ci-Only-Password-2026!
+      SMS_ENABLED: 'false'
+      KONNECT_API_KEY: ''
+      KONNECT_WEBHOOK_SECRET: ci-webhook-secret
+      SEED_PILATES_SCHEDULE: 'false'
+      CLOUDINARY_URL: ''
+      # admin-visibility-journeys.cjs and pilates-booking-journeys.cjs need a
+      # couple of direct SQL setups (backdating a pack's expiry, seeding one
+      # legacy row) that have no admin endpoint. Locally they exec into a
+      # named docker container; here they talk straight to the CI Postgres
+      # service instead.
+      TAKEOFF_DB_HOST: localhost
+      TAKEOFF_DB_PORT: 5432
+      TAKEOFF_DB_USER: takeoff
+      TAKEOFF_DB_NAME: takeoff_journeys
+      TAKEOFF_DB_PASSWORD: takeoff
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: gradle
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Generate JWT keys
+        run: |
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /tmp/jwt.private.pem
+          openssl rsa -pubout -in /tmp/jwt.private.pem -out /tmp/jwt.public.pem
+
+      - name: Build the jar
+        run: ./gradlew bootJar --no-daemon -q
+
+      - name: Start the API
+        run: |
+          nohup java -jar build/libs/*-SNAPSHOT.jar > /tmp/api.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:18081/actuator/health > /dev/null && exit 0
+            sleep 2
+          done
+          echo "API did not become healthy in time"
+          cat /tmp/api.log
+          exit 1
+
+      - name: Run the business journeys (blocking)
+        working-directory: src/test/resources
+        run: |
+          set -e
+          for suite in \
+            padel-booking-journeys \
+            admin-visibility-journeys \
+            order-pricing-journeys \
+            admin-propagation-journeys \
+            tournament-registration-journeys \
+            guest-payment-journeys \
+            pilates-booking-journeys \
+          ; do
+            echo "::group::$suite"
+            node "$suite.cjs" "http://127.0.0.1:18081" "$ADMIN_EMAIL" "$ADMIN_PASSWORD"
+            echo "::endgroup::"
+          done
+
+      - name: API log on failure
+        if: failure()
+        run: cat /tmp/api.log || true

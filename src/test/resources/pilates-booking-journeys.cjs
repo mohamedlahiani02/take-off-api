@@ -14,17 +14,34 @@ const { execFileSync } = require('node:child_process')
 const BASE = (process.argv[2] || 'http://127.0.0.1:18081') + '/api/v1'
 const ADMIN_EMAIL = process.argv[3] || 'audit-admin@example.test'
 const ADMIN_PASSWORD = process.argv[4] || 'Audit-Only-Password-2026!'
+/**
+ * Local runs exec into the named docker container the way the rest of this
+ * session's suites do; CI has no such container, so TAKEOFF_DB_HOST (etc.)
+ * point psql at the CI Postgres service directly over TCP instead.
+ */
 const DB_CONTAINER = process.env.TAKEOFF_DB_CONTAINER || 'takeoff-recheck-20260922'
+const DB_HOST = process.env.TAKEOFF_DB_HOST
+const DB_PORT = process.env.TAKEOFF_DB_PORT || '5432'
+const DB_USER = process.env.TAKEOFF_DB_USER || 'audit'
+const DB_NAME = process.env.TAKEOFF_DB_NAME || 'takeoff_audit'
+const DB_PASSWORD = process.env.TAKEOFF_DB_PASSWORD
 
 const results = []
 let admin
 const stamp = Date.now().toString(36)
 let seq = 0
 
-const sql = (q) =>
-  execFileSync('docker', ['exec', DB_CONTAINER, 'psql', '-U', 'audit', '-d', 'takeoff_audit', '-At', '-c', q], {
+const sql = (q) => {
+  if (DB_HOST) {
+    return execFileSync('psql', ['-h', DB_HOST, '-p', DB_PORT, '-U', DB_USER, '-d', DB_NAME, '-At', '-c', q], {
+      encoding: 'utf8', windowsHide: true,
+      env: { ...process.env, ...(DB_PASSWORD ? { PGPASSWORD: DB_PASSWORD } : {}) },
+    }).trim()
+  }
+  return execFileSync('docker', ['exec', DB_CONTAINER, 'psql', '-U', DB_USER, '-d', DB_NAME, '-At', '-c', q], {
     encoding: 'utf8', windowsHide: true,
   }).trim()
+}
 
 async function req(method, path, body, token) {
   const res = await fetch(BASE + path, {
