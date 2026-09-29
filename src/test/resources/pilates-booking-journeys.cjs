@@ -112,6 +112,16 @@ async function pilatesPackType() {
     name: `Journey Pack ${stamp}`, activity: 'PILATES', priceDt: 200, creditCount: 5, unlimited: false, validityMonths: 3,
   }, admin)
 }
+/** A fresh PILATES pack type with exactly one credit, never reused across
+ *  tests — the shared-credit concurrency case needs to know precisely how
+ *  many credits exist, which pilatesPackType()'s shared 5-credit type does
+ *  not guarantee once other tests have consumed from it. */
+async function oneCreditPackType() {
+  seq += 1
+  return ok('POST', '/admin/packs/types', {
+    name: `Journey OneCredit ${stamp}-${seq}`, activity: 'PILATES', priceDt: 40, creditCount: 1, unlimited: false, validityMonths: 3,
+  }, admin)
+}
 async function unlimitedPackType() {
   const types = await ok('GET', '/admin/packs/types', undefined, admin)
   const list = Array.isArray(types) ? types : types.content ?? []
@@ -342,6 +352,273 @@ async function main() {
 
     // Read-only: nothing was charged just by listing it.
     assert.equal(await wallet(u), 0)
+  })
+
+  await test('PI17', 'Real concurrent promotion across two sessions sharing one pack credit: only one promotion consumes it, the other falls through to a wallet charge', async () => {
+    const pt = await oneCreditPackType()
+    const u = await member(100)
+    await ok('POST', '/admin/packs/assign', { userId: u.user.id, packTypeId: pt.id }, admin)
+
+    const sA = await makeSession({ maxSpots: 1, priceDt: 30 })
+    const sB = await makeSession({ maxSpots: 1, priceDt: 45 })
+    const fillerA = await member(100)
+    const fillerB = await member(100)
+    const bookA = await ok('POST', '/classes/bookings', { sessionId: sA.id, paymentMethod: 'WALLET' }, tok(fillerA))
+    const bookB = await ok('POST', '/classes/bookings', { sessionId: sB.id, paymentMethod: 'WALLET' }, tok(fillerB))
+    const waitA = await ok('POST', '/classes/bookings', { sessionId: sA.id, paymentMethod: 'WALLET' }, tok(u))
+    const waitB = await ok('POST', '/classes/bookings', { sessionId: sB.id, paymentMethod: 'WALLET' }, tok(u))
+    assert.equal(waitA.status, 'WAITLIST')
+    assert.equal(waitB.status, 'WAITLIST')
+
+    // Free both real spots so both promotions have somewhere to land, then
+    // promote both waitlist entries at the same instant — real concurrency,
+    // not sequential.
+    await ok('DELETE', `/classes/bookings/${bookA.bookingId}`, undefined, tok(fillerA))
+    await ok('DELETE', `/classes/bookings/${bookB.bookingId}`, undefined, tok(fillerB))
+
+    const [rA, rB] = await Promise.all([
+      req('POST', `/admin/classes/bookings/${waitA.bookingId}/promote`, undefined, admin),
+      req('POST', `/admin/classes/bookings/${waitB.bookingId}/promote`, undefined, admin),
+    ])
+
+    // Both promotions must succeed (there was real capacity in both
+    // sessions) — but only one of them may have used the single pack
+    // credit; the other must have fallen through to a real wallet charge,
+    // exactly as book() would for "no valid pack".
+    assert.equal(rA.status, 200, 'promotion A: ' + JSON.stringify(rA.data))
+    assert.equal(rB.status, 200, 'promotion B: ' + JSON.stringify(rB.data))
+    const paidWiths = [rA.data.paidWith, rB.data.paidWith].sort()
+    assert.deepEqual(paidWiths, ['PACK', 'SINGLE'], 'exactly one promotion must consume the shared credit, the other must be a wallet charge')
+
+    const packs = await ok('GET', '/classes/packs/mine', undefined, tok(u))
+    const mine = packs.find((p) => p.packName === pt.name)
+    assert.ok(mine, 'the one-credit pack must still be visible')
+    assert.equal(mine.creditsRemaining, 0, 'the single credit must be consumed exactly once, not twice, not left untouched')
+
+    const chargedSessionPrice = rA.data.paidWith === 'SINGLE' ? Number(rA.data.priceDt) : Number(rB.data.priceDt)
+    assert.equal(await wallet(u), 100 - chargedSessionPrice, 'the wallet must be charged exactly once, for exactly the session that lost the race for the credit')
+  })
+
+  await test('PI18', 'Double-clicking / retrying promote on the same booking never double-charges', async () => {
+    const pt = await pilatesPackType()
+    const u = await member(100)
+    await ok('POST', '/admin/packs/assign', { userId: u.user.id, packTypeId: pt.id }, admin)
+    const before = await ok('GET', '/classes/packs/mine', undefined, tok(u))
+    const creditsBefore = before.find((p) => p.packName === pt.name).creditsRemaining
+
+    const s = await makeSession({ maxSpots: 1, priceDt: 20 })
+    const filler = await member(100)
+    const filled = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(filler))
+    const waiting = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(u))
+    assert.equal(waiting.status, 'WAITLIST')
+    await ok('DELETE', `/classes/bookings/${filled.bookingId}`, undefined, tok(filler))
+
+    // Two real concurrent promote() calls against the exact same booking id —
+    // simulating a double-click or a retried admin request.
+    const [r1, r2] = await Promise.all([
+      req('POST', `/admin/classes/bookings/${waiting.bookingId}/promote`, undefined, admin),
+      req('POST', `/admin/classes/bookings/${waiting.bookingId}/promote`, undefined, admin),
+    ])
+    const statuses = [r1.status, r2.status].sort((a, b) => a - b)
+    assert.deepEqual(statuses, [200, 409], `exactly one promote must succeed, the other must be rejected as no-longer-waitlisted, got ${r1.status} ${r2.status}`)
+    const loser = r1.status === 409 ? r1 : r2
+    assert.match(String(loser.data?.code ?? ''), /not_waitlisted/)
+
+    const after = await ok('GET', '/classes/packs/mine', undefined, tok(u))
+    const creditsAfter = after.find((p) => p.packName === pt.name).creditsRemaining
+    assert.equal(creditsAfter, creditsBefore - 1, 'exactly one credit must be consumed, not two')
+
+    const detail = await ok('GET', `/admin/classes/sessions/${s.id}`, undefined, admin)
+    assert.equal(detail.bookedCount, 1, 'the session must show exactly one booked spot, not two')
+  })
+
+  await test('PI19a', 'Promoting into a cancelled session is refused, matching book()\'s cancelled-session message', async () => {
+    const pt = await pilatesPackType()
+    const u = await member(100)
+    await ok('POST', '/admin/packs/assign', { userId: u.user.id, packTypeId: pt.id }, admin)
+    const s = await makeSession({ maxSpots: 1, priceDt: 20 })
+    const filler = await member(100)
+    await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(filler))
+    const waiting = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(u))
+    assert.equal(waiting.status, 'WAITLIST')
+
+    // Directly flip the session to CANCELLED without touching the booking
+    // row, isolating promote()'s own session-status guard (the admin
+    // cancelSession() endpoint would also cancel the waitlisted booking
+    // itself, which would instead trip the "not on the waitlist" check).
+    sql(`update class_sessions set status = 'CANCELLED' where id='${s.id}'`)
+
+    const r = await req('POST', `/admin/classes/bookings/${waiting.bookingId}/promote`, undefined, admin)
+    rejects(r, 'promoting into a cancelled session', /cancelled/)
+
+    const mine = await ok('GET', '/classes/bookings/mine', undefined, tok(u))
+    const row = mine.find((b) => b.session?.id === s.id)
+    assert.equal(row.status, 'WAITLIST', 'a refused promotion must not flip the booking to BOOKED')
+    assert.equal(await wallet(u), 100)
+  })
+
+  await test('PI19b', 'Promoting into a session that has already started is refused, matching book()\'s past-session message', async () => {
+    const pt = await pilatesPackType()
+    const u = await member(100)
+    await ok('POST', '/admin/packs/assign', { userId: u.user.id, packTypeId: pt.id }, admin)
+    const s = await makeSession({ maxSpots: 1, priceDt: 20 })
+    const filler = await member(100)
+    await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(filler))
+    const waiting = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(u))
+    assert.equal(waiting.status, 'WAITLIST')
+
+    sql(`update class_sessions set starts_at = now() - interval '1 hour' where id='${s.id}'`)
+
+    const r = await req('POST', `/admin/classes/bookings/${waiting.bookingId}/promote`, undefined, admin)
+    rejects(r, 'promoting into a session that already started', /past_session/)
+
+    const mine = await ok('GET', '/classes/bookings/mine', undefined, tok(u))
+    const row = mine.find((b) => b.session?.id === s.id)
+    assert.equal(row.status, 'WAITLIST', 'a refused promotion must not flip the booking to BOOKED')
+    assert.equal(await wallet(u), 100)
+  })
+
+  await test('PI20', 'Real concurrent capacity race: a fresh booking and a waitlist promotion competing for the same freed spot never both win it', async () => {
+    const s = await makeSession({ maxSpots: 1, priceDt: 25 })
+    const filler = await member(100)
+    const filled = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(filler))
+    const b = await member(100)
+    const waiting = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(b))
+    assert.equal(waiting.status, 'WAITLIST')
+
+    await ok('DELETE', `/classes/bookings/${filled.bookingId}`, undefined, tok(filler))
+
+    // A brand-new member racing to book the just-freed spot, at the exact
+    // same instant an admin promotes the waitlisted member into it.
+    const c = await member(100)
+    const [bookResp, promoteResp] = await Promise.all([
+      req('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(c)),
+      req('POST', `/admin/classes/bookings/${waiting.bookingId}/promote`, undefined, admin),
+    ])
+
+    assert.ok(bookResp.status < 400, 'the fresh booking attempt itself must not error: ' + JSON.stringify(bookResp.data))
+
+    const detail = await ok('GET', `/admin/classes/sessions/${s.id}`, undefined, admin)
+    assert.equal(detail.bookedCount, 1, 'the single real spot must never be granted to both competitors at once')
+
+    // Exactly one of the two actually holds the real (charged) spot; the
+    // other must have been cleanly refused (promote: still WAITLIST / 400
+    // full) or itself waitlisted (book: WAITLIST, uncharged) — never both
+    // holding a BOOKED spot, and never a silent double-charge.
+    const promoted = promoteResp.status === 200
+    const freshBooked = bookResp.data?.status === 'BOOKED'
+    assert.ok(promoted !== freshBooked || !(promoted && freshBooked), 'both sides must not simultaneously win the one real spot')
+    assert.ok(promoted || freshBooked, 'at least one side must have taken the real spot')
+
+    if (!promoted) {
+      assert.equal(promoteResp.status, 400)
+      assert.match(String(promoteResp.data?.code ?? ''), /full/)
+      const mine = await ok('GET', '/classes/bookings/mine', undefined, tok(b))
+      const row = mine.find((x) => x.session?.id === s.id)
+      assert.equal(row.status, 'WAITLIST')
+      assert.equal(await wallet(b), 100, 'a refused promotion must not have charged the member')
+    }
+    if (!freshBooked) {
+      assert.equal(bookResp.data?.status, 'WAITLIST', 'the loser of the capacity race must land on the waitlist, not an error, per book()\'s own full-session handling')
+      assert.equal(await wallet(c), 100, 'a member who lands on the waitlist through the race must not be charged')
+    }
+  })
+
+  await test('PI21', 'Non-late member cancellation of a SINGLE booking grants a use credit, wallet stays untouched, and the credit is usable on a later booking', async () => {
+    const s = await makeSession({ priceDt: 28 })
+    const u = await member(100)
+    const b = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(u))
+    assert.equal(b.paidWith, 'SINGLE')
+    assert.equal(await wallet(u), 72)
+
+    await ok('DELETE', `/classes/bookings/${b.bookingId}`, undefined, tok(u))
+    assert.equal(await wallet(u), 72, 'a non-late SINGLE cancellation must not recredit the wallet')
+
+    const packs = await ok('GET', '/classes/packs/mine', undefined, tok(u))
+    const credit = packs.find((p) => p.packName === "Crédit d'utilisation (annulation)")
+    assert.ok(credit, 'the use credit must appear in packs/mine')
+    assert.equal(credit.creditsRemaining, 1)
+
+    // Spend the credit on a different session: no wallet charge, and no
+    // payment method required — it consumes through book()'s existing PACK
+    // branch, exactly like a real pack credit would.
+    const s2 = await makeSession({ priceDt: 60 })
+    const b2 = await ok('POST', '/classes/bookings', { sessionId: s2.id }, tok(u))
+    assert.equal(b2.status, 'BOOKED')
+    assert.equal(b2.paidWith, 'PACK')
+    assert.equal(Number(b2.priceDt), 0)
+    assert.equal(await wallet(u), 72, 'spending the use credit must not touch the wallet')
+
+    const packsAfter = await ok('GET', '/classes/packs/mine', undefined, tok(u))
+    const creditAfter = packsAfter.find((p) => p.packName === "Crédit d'utilisation (annulation)")
+    assert.equal(creditAfter.creditsRemaining, 0, 'the credit must be consumed exactly once')
+  })
+
+  await test('PI22', 'A LATE_CANCEL still yields nothing — no wallet refund, no use credit (regression, unchanged pre-fix behaviour)', async () => {
+    const s = await makeSession({ priceDt: 22, startsAt: new Date(Date.now() + 5 * 3600_000).toISOString() })
+    const u = await member(100)
+    const b = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(u))
+    assert.equal(await wallet(u), 78)
+
+    await ok('DELETE', `/classes/bookings/${b.bookingId}`, undefined, tok(u))
+    assert.equal(await wallet(u), 78, 'a LATE_CANCEL must not refund the wallet')
+
+    const mine = await ok('GET', '/classes/bookings/mine', undefined, tok(u))
+    const row = mine.find((x) => x.bookingId === b.bookingId)
+    assert.equal(row.status, 'LATE_CANCEL')
+
+    const packs = await ok('GET', '/classes/packs/mine', undefined, tok(u))
+    const credit = packs.find((p) => p.packName === "Crédit d'utilisation (annulation)")
+    assert.ok(!credit, 'a late cancellation must not grant a use credit either')
+  })
+
+  await test('PI23', 'Club cancelling a session more than 24h out auto-refunds a SINGLE booking to the wallet, idempotently', async () => {
+    const s = await makeSession({ priceDt: 40 })
+    const u = await member(100)
+    const b = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(u))
+    assert.equal(await wallet(u), 60)
+
+    await ok('POST', `/admin/classes/sessions/${s.id}/cancel`, undefined, admin)
+    assert.equal(await wallet(u), 100, 'more than 24h out, the club cancellation must auto-refund the wallet')
+
+    // Retry the exact same cancel-session action (double-click / retried
+    // request) — must not double-refund.
+    await ok('POST', `/admin/classes/sessions/${s.id}/cancel`, undefined, admin)
+    assert.equal(await wallet(u), 100, 'retrying cancel-session must not refund a second time')
+
+    const mine = await ok('GET', '/classes/bookings/mine', undefined, tok(u))
+    const row = mine.find((x) => x.bookingId === b.bookingId)
+    assert.equal(row.status, 'CANCELLED')
+  })
+
+  await test('PI24', 'Club cancelling a session less than 24h out does not auto-refund — the booking surfaces in the manual-refund list', async () => {
+    const s = await makeSession({ priceDt: 33, startsAt: new Date(Date.now() + 6 * 3600_000).toISOString() })
+    const u = await member(100)
+    const b = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(u))
+    assert.equal(await wallet(u), 67)
+
+    await ok('POST', `/admin/classes/sessions/${s.id}/cancel`, undefined, admin)
+    assert.equal(await wallet(u), 67, 'inside 24h, the club cancellation must not auto-refund')
+
+    const pending = await ok('GET', '/admin/classes/bookings/refund-pending', undefined, admin)
+    const found = pending.find((r) => r.bookingId === b.bookingId)
+    assert.ok(found, 'the booking must be surfaced for an admin to refund manually')
+    assert.equal(Number(found.priceDt), 33)
+  })
+
+  await test('PI25', 'unpaidLegacyBookings still never auto-charges, and stays distinct from the manual-refund list (regression)', async () => {
+    const u = await member(0)
+    const s = await makeSession({ priceDt: 44 })
+    const legacyRaw = sql(`insert into class_bookings (id, session_id, user_id, status, paid_with, price_dt)
+      values (gen_random_uuid(), '${s.id}', '${u.user.id}', 'BOOKED', 'SINGLE', 44) returning id`)
+    const legacyId = legacyRaw.split(/\s+/)[0]
+
+    const unpaid = await ok('GET', '/admin/classes/bookings/unpaid-legacy', undefined, admin)
+    assert.ok(unpaid.find((r) => r.bookingId === legacyId), 'the legacy unpaid booking must still be surfaced, unchanged')
+    assert.equal(await wallet(u), 0, 'listing legacy unpaid bookings must never charge retroactively')
+
+    const pending = await ok('GET', '/admin/classes/bookings/refund-pending', undefined, admin)
+    assert.ok(!pending.find((r) => r.bookingId === legacyId), 'a legacy unpaid booking (never refund_pending) must not leak into the manual-refund list')
   })
 
   const pass = results.filter((r) => r === 'PASS').length

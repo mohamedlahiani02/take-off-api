@@ -26,4 +26,9 @@ interface ClassBookingRepository : JpaRepository<ClassBooking, UUID> {
     fun findByPaidWithAndStatusIn(paidWith: PaidWith, statuses: List<ClassBookingStatus>): List<ClassBooking>
     fun countBySessionIdAndStatus(sessionId: UUID, status: ClassBookingStatus): Long
     fun findByUserIdOrderByCreatedAtDesc(userId: UUID): List<ClassBooking>
+    fun findByRefundPendingTrue(): List<ClassBooking>
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT b FROM ClassBooking b WHERE b.id = :id")
+    fun findByIdForUpdate(id: UUID): Optional<ClassBooking>
 }

@@ -1,5 +1,11 @@
 package tn.takeoff.admin.courts
 
+import com.fasterxml.jackson.core.JsonParser
+import com.fasterxml.jackson.core.JsonToken
+import com.fasterxml.jackson.databind.DeserializationContext
+import com.fasterxml.jackson.databind.deser.std.StdDeserializer
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize
+import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.NotNull
 import tn.takeoff.courts.BookingMode
@@ -164,14 +170,42 @@ data class BookingDto(
  * that many open seats so they stop being offered for booking; leave it 0 for
  * a payment that is just money with no seat claim (or on a FULL booking,
  * which has no seats to reserve).
+ *
+ * `coveredSeats` and `amountDt` are intentionally independent: a lump sum can
+ * cover an uneven split (partial contribution, tip, rounding) without being
+ * forced to equal seats * per-seat price — only the structural bound
+ * (coveredSeats <= open seats) and the financial bound (amountDt <= remaining
+ * due) are enforced, never a relationship between the two.
+ *
+ * `idempotencyKey` is client-generated once per genuine admin action (see
+ * take-off-web's admin panel) so a double-click or a browser retry after a
+ * network blip replays the SAME payment record instead of billing twice.
  */
 data class AddGuestPaymentRequest(
     @field:NotNull val amountDt: BigDecimal,
     @field:NotNull val method: tn.takeoff.courts.GuestPaymentMethod,
     val payerName: String? = null,
+    @field:Min(0)
+    @field:JsonDeserialize(using = StrictWholeIntDeserializer::class)
     val coveredSeats: Int = 0,
     val reference: String? = null,
+    @field:NotBlank val idempotencyKey: String = "",
 )
+
+/**
+ * Jackson's default Int deserializer silently truncates a JSON float
+ * (1.5 -> 1) instead of rejecting it, so a plain `Int` field alone does not
+ * satisfy "non-integer coveredSeats must be rejected" — this makes a
+ * fractional JSON number a hard 400 instead of a quiet truncation.
+ */
+class StrictWholeIntDeserializer : StdDeserializer<Int>(Int::class.java) {
+    override fun deserialize(p: JsonParser, ctxt: DeserializationContext): Int {
+        if (p.currentToken() != JsonToken.VALUE_NUMBER_INT) {
+            return ctxt.reportInputMismatch<Int>(Int::class.java, "coveredSeats must be a whole number, not '%s'", p.text)
+        }
+        return p.intValue
+    }
+}
 
 /** Corrections are traced, never a silent delete — reason is mandatory. */
 data class VoidGuestPaymentRequest(@field:NotBlank val reason: String)

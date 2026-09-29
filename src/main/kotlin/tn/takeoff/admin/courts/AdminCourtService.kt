@@ -217,10 +217,23 @@ class AdminCourtService(
      * confirmed booking's remaining balance. Locks the booking row so two
      * concurrent collections against the same balance cannot both succeed
      * (the same guard already used for booking creation).
+     *
+     * Idempotent on (bookingId, req.idempotencyKey): a replay of the exact
+     * same client-generated key (double-click, or a browser retry after a
+     * network blip with no re-click) returns the booking as it already
+     * stands instead of inserting a second row — including when the original
+     * payment was later voided, since a replay is not a new action and must
+     * not resurrect or re-litigate one. The findByIdForUpdate lock above
+     * serialises this against a genuinely concurrent identical request: the
+     * second call blocks until the first commits, then its own lookup below
+     * (run fresh, after the lock is acquired) sees the row the first call
+     * just inserted. The unique DB constraint (V38) is the belt-and-braces
+     * backstop if that ever races anyway.
      */
     @Transactional
     fun addGuestPayment(bookingId: UUID, req: AddGuestPaymentRequest, adminId: UUID): BookingDto {
         val b = bookings.findByIdForUpdate(bookingId).orElseThrow { NotFoundException("court_booking", bookingId) }
+        guestPayments.findByBookingIdAndIdempotencyKey(bookingId, req.idempotencyKey)?.let { return dtoWithPlayers(b) }
         if (b.status == BookingStatus.CANCELLED) {
             throw ConflictException("takeoff.booking.cancelled", "Booking is cancelled")
         }
@@ -264,8 +277,20 @@ class AdminCourtService(
         val payment = CourtBookingPayment(
             bookingId = bookingId, amountDt = req.amountDt, method = req.method, payerName = req.payerName,
             coveredSeats = req.coveredSeats, reference = req.reference, collectedByAdminId = adminId,
+            idempotencyKey = req.idempotencyKey,
         )
-        guestPayments.save(payment)
+        try {
+            guestPayments.save(payment)
+        } catch (ex: org.springframework.dao.DataIntegrityViolationException) {
+            // Backstop for a genuinely simultaneous replay that slipped past the
+            // pre-check above (e.g. two requests both arriving before either had
+            // acquired the row lock's queue slot) — the unique (booking_id,
+            // idempotency_key) constraint from V38 is what actually decides the
+            // race; treat "someone else already inserted this key" as success.
+            guestPayments.findByBookingIdAndIdempotencyKey(bookingId, req.idempotencyKey)
+                ?: throw ex
+            return dtoWithPlayers(b)
+        }
         auditService.log(
             adminId, "court.guest_payment", "court_booking_payment", payment.id.toString(),
             mapOf("amountDt" to req.amountDt.toString(), "coveredSeats" to req.coveredSeats.toString(), "method" to req.method.name),

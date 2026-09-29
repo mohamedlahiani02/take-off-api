@@ -39,6 +39,13 @@ class AdminClassController(private val service: AdminClassService) {
     @GetMapping("/bookings/unpaid-legacy")
     fun unpaidLegacy(): List<UnpaidLegacyBookingDto> = service.unpaidLegacySingleBookings()
 
+    /** Read-only: SINGLE-paid bookings the club cancelled less than 24h before
+     *  the session started, so no automatic wallet refund happened — see
+     *  AdminClassService.cancelSession / pendingManualRefunds. An admin
+     *  settles these by hand; listing them never refunds anything itself. */
+    @GetMapping("/bookings/refund-pending")
+    fun refundPending(): List<UnpaidLegacyBookingDto> = service.pendingManualRefunds()
+
     @PostMapping("/sessions")
     fun createSession(@Valid @RequestBody req: SessionRequest, @AuthenticationPrincipal a: JwtService.AdminClaims): ClassSession =
         service.createSession(req, a.adminId)

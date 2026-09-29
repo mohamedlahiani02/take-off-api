@@ -52,6 +52,15 @@ class CourtBookingPayment(
     @Column(name = "collected_by_admin_id", nullable = false)
     var collectedByAdminId: UUID,
 
+    /**
+     * Client-supplied idempotency key (unique per booking — see V38). Lets a
+     * double-click or a network-retried identical request resolve to this
+     * same row instead of creating a duplicate cash-in. Nullable only because
+     * rows written before V38 have none; every new write always sets it.
+     */
+    @Column(name = "idempotency_key")
+    val idempotencyKey: String? = null,
+
     @Column(nullable = false)
     var voided: Boolean = false,
 
@@ -71,4 +80,5 @@ class CourtBookingPayment(
 interface CourtBookingPaymentRepository : JpaRepository<CourtBookingPayment, UUID> {
     fun findByBookingIdOrderByCreatedAtDesc(bookingId: UUID): List<CourtBookingPayment>
     fun findByBookingIdInAndVoidedFalse(bookingIds: Collection<UUID>): List<CourtBookingPayment>
+    fun findByBookingIdAndIdempotencyKey(bookingId: UUID, idempotencyKey: String): CourtBookingPayment?
 }

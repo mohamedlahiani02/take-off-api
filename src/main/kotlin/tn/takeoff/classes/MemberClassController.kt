@@ -68,6 +68,10 @@ class MemberClassController(
          */
         private val SUPPORTED_PACK_PAYMENT_METHODS = setOf("WALLET")
         private const val MAX_PACK_QUANTITY = 10
+
+        /** Hidden PACK type used to grant a non-late SINGLE cancellation's use
+         *  credit — see V39__pilates_single_cancellation_policy.sql. */
+        private val CANCEL_USE_CREDIT_PACK_TYPE_ID = UUID.fromString("00000000-0000-0000-0000-0000000000c1")
     }
 
     // ── Public schedule ──────────────────────────────────────────────────────
@@ -236,6 +240,7 @@ class MemberClassController(
 
     @DeleteMapping("/bookings/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
+    @Transactional
     fun cancel(@PathVariable id: UUID, @AuthenticationPrincipal claims: JwtService.Claims) {
         val booking = bookings.findById(id).orElseThrow { NotFoundException("booking", id) }
         if (booking.userId != claims.userId) throw BadRequestException("takeoff.forbidden", "Not your booking")
@@ -260,6 +265,27 @@ class MemberClassController(
                     refType = "class_booking", refId = booking.id.toString(),
                 ))
             }
+        } else if (!isLate && booking.paidWith == PaidWith.SINGLE && booking.userId != null) {
+            // Club policy: a non-late cancellation of a SINGLE (wallet-paid)
+            // booking does NOT put the DT back in the wallet. Instead the
+            // member gets a non-monetary use credit, valid for a future
+            // booking. Modelled as a hidden one-session PACK credit (see
+            // V39__pilates_single_cancellation_policy.sql) so it is consumed
+            // through book()'s existing activePack/PACK branch unchanged —
+            // no third parallel payment path.
+            val credit = UserPack(
+                userId = booking.userId!!,
+                packTypeId = CANCEL_USE_CREDIT_PACK_TYPE_ID,
+                creditsRemaining = 1,
+                unlimited = false,
+                expiresAt = Instant.now().plus(180, ChronoUnit.DAYS),
+            )
+            userPacks.save(credit)
+            ledger.save(PackCreditLedger(
+                userPackId = credit.id, delta = 1,
+                type = CreditEntryType.ADMIN_ADD, reason = "cancel_use_credit",
+                refType = "class_booking", refId = booking.id.toString(),
+            ))
         }
 
         bookings.save(booking)

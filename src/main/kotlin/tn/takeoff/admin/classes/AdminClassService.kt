@@ -1,5 +1,6 @@
 ﻿package tn.takeoff.admin.classes
 
+import jakarta.persistence.EntityManager
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import tn.takeoff.admin.audit.AuditService
@@ -21,6 +22,7 @@ import tn.takeoff.common.errors.ConflictException
 import tn.takeoff.common.errors.NotFoundException
 import java.math.BigDecimal
 import java.time.Instant
+import java.time.temporal.ChronoUnit
 import java.util.UUID
 
 data class ClassBookingHistoryDto(
@@ -57,6 +59,7 @@ class AdminClassService(
     private val userRepo: tn.takeoff.users.UserRepository,
     private val packTypes: PackTypeRepository,
     private val walletService: WalletService,
+    private val em: EntityManager,
 ) {
     /**
      * Bookings the old logic marked BOOKED/paidWith=SINGLE without ever
@@ -156,12 +159,26 @@ class AdminClassService(
         return s
     }
 
-    /** E-03: cancel a session — credits/refunds handled when pack logic lands; marks bookings cancelled. */
+    /**
+     * E-03: cancel a whole session (club-initiated, distinct from a member
+     * cancelling their own booking in MemberClassController.cancel).
+     *
+     * For each SINGLE-paid booking still holding a spot: more than 24h before
+     * the session's start, the wallet is refunded automatically and for real
+     * (WalletService.applyOnce, keyed on this booking id + a dedicated
+     * refType — a retried/replayed cancelSession call cannot double-refund).
+     * Inside 24h, no automatic refund happens; the booking is flagged
+     * (refund_pending) for an admin to settle by hand — see
+     * pendingManualRefunds(). Already-cancelled bookings are skipped (status
+     * is no longer BOOKED/WAITLIST), which also makes a retried call a no-op
+     * for them on top of applyOnce's own idempotency.
+     */
     @Transactional
     fun cancelSession(id: UUID, adminId: UUID): ClassSession {
         val s = sessions.findById(id).orElseThrow { NotFoundException("class_session", id) }
         s.status = SessionStatus.CANCELLED; s.updatedAt = Instant.now()
         sessions.save(s)
+        val moreThan24hOut = ChronoUnit.HOURS.between(Instant.now(), s.startsAt) >= 24
         bookings.findBySessionId(id).forEach {
             if (it.status == ClassBookingStatus.BOOKED || it.status == ClassBookingStatus.WAITLIST) {
                 if (it.status == ClassBookingStatus.BOOKED && it.paidWith == PaidWith.PACK && it.userPackId != null) {
@@ -176,12 +193,52 @@ class AdminClassService(
                             refType = "class_booking", refId = it.id.toString(),
                         ))
                     }
+                } else if (it.status == ClassBookingStatus.BOOKED && it.paidWith == PaidWith.SINGLE &&
+                    it.userId != null && it.priceDt > BigDecimal.ZERO
+                ) {
+                    if (moreThan24hOut) {
+                        walletService.applyOnce(
+                            userId = it.userId!!, delta = it.priceDt, type = WalletEntryType.REFUND,
+                            reason = "session_cancel_refund", refType = "class_booking_session_cancel",
+                            refId = it.id.toString(),
+                        )
+                    } else {
+                        it.refundPending = true
+                    }
                 }
                 it.status = ClassBookingStatus.CANCELLED; it.updatedAt = Instant.now(); bookings.save(it)
             }
         }
         auditService.log(adminId, "class.session_cancel", "class_session", id.toString())
         return s
+    }
+
+    /**
+     * SINGLE-paid bookings the club cancelled (via cancelSession) less than
+     * 24h before the session started: policy leaves these unrefunded
+     * automatically so an admin can settle them by hand. Read-only, same
+     * shape as unpaidLegacySingleBookings — listing this never refunds
+     * anything by itself.
+     */
+    fun pendingManualRefunds(): List<UnpaidLegacyBookingDto> {
+        val pending = bookings.findByRefundPendingTrue()
+            .filter { it.priceDt > BigDecimal.ZERO && it.userId != null }
+        if (pending.isEmpty()) return emptyList()
+
+        val sessionIds = pending.map { it.sessionId }.toSet()
+        val sessionsById = sessions.findAllById(sessionIds).associateBy { it.id }
+        val userIds = pending.mapNotNull { it.userId }.toSet()
+        val usersById = userRepo.findAllById(userIds).associateBy { it.id }
+
+        return pending.map { b ->
+            val session = sessionsById[b.sessionId]
+            val user = usersById[b.userId]
+            UnpaidLegacyBookingDto(
+                bookingId = b.id, sessionId = b.sessionId, startsAt = session?.startsAt,
+                userId = b.userId, userName = user?.name, userPhone = user?.phone,
+                priceDt = b.priceDt, createdAt = b.createdAt,
+            )
+        }
     }
 
     // ── bookings / attendance ──
@@ -237,22 +294,60 @@ class AdminClassService(
      * If neither works, the promotion itself fails (transaction rolls back)
      * rather than granting the spot for nothing — the admin sees why and can
      * decide (chase the member, use a manual override).
+     *
+     * Locking mirrors MemberClassController.book() exactly, because the same
+     * three races apply here:
+     *  - the booking row is locked FIRST and its WAITLIST status re-checked
+     *    under that lock, so a double-click / retried promote() on the same
+     *    booking serialises: the second caller sees the already-BOOKED row
+     *    and is rejected, instead of re-charging.
+     *  - the session row is locked and its status/start time/real capacity
+     *    re-checked under that lock (same messages as book()), so promoting
+     *    into a session that was cancelled, has started, or has since filled
+     *    up via a concurrent booking is refused rather than silently
+     *    overbooking.
+     *  - the candidate pack row is locked and re-validated *after* the lock
+     *    (not the value read before it), so two promotions racing over the
+     *    member's last shared credit cannot both consume it: whichever loses
+     *    the lock re-checks and correctly falls through to the same "no
+     *    valid pack" wallet-charge path book() would take.
      */
     @Transactional
     fun promote(bookingId: UUID, adminId: UUID): ClassBooking {
-        val b = bookings.findById(bookingId).orElseThrow { NotFoundException("class_booking", bookingId) }
+        val b = bookings.findByIdForUpdate(bookingId).orElseThrow { NotFoundException("class_booking", bookingId) }
         if (b.status != ClassBookingStatus.WAITLIST) throw ConflictException("takeoff.class.not_waitlisted", "Not on the waitlist")
+        val userId = b.userId ?: throw BadRequestException("takeoff.class.no_user", "Waitlisted booking has no member")
+
         val session = sessions.findByIdForUpdate(b.sessionId).orElseThrow { NotFoundException("class_session", b.sessionId) }
+        if (session.status != SessionStatus.SCHEDULED)
+            throw BadRequestException("takeoff.class.cancelled", "This session has been cancelled")
+        if (session.startsAt.isBefore(Instant.now()))
+            throw BadRequestException("takeoff.class.past_session", "Cannot book a session that has already started")
+
         val bookedCount = bookings.countBySessionIdAndStatus(b.sessionId, ClassBookingStatus.BOOKED)
         if (bookedCount >= session.maxSpots)
             throw BadRequestException("takeoff.class.full", "Session is already full")
-        val userId = b.userId ?: throw BadRequestException("takeoff.class.no_user", "Waitlisted booking has no member")
 
-        val activePack = userPacks.findByUserIdOrderByPurchasedAtDesc(userId).firstOrNull {
-            it.status == UserPackStatus.ACTIVE && it.expiresAt.isAfter(Instant.now()) &&
+        val activePack = userPacks.findByUserIdOrderByPurchasedAtDesc(userId)
+            .firstOrNull {
+                it.status == UserPackStatus.ACTIVE &&
+                it.expiresAt.isAfter(Instant.now()) &&
                 (it.unlimited || (it.creditsRemaining ?: 0) > 0) &&
                 packTypes.findById(it.packTypeId).map { pt -> pt.activity == PackActivity.PILATES }.orElse(false)
-        }
+            }
+            ?.let { candidate ->
+                // Re-validate under the pack's own row lock, not the value read
+                // above — another concurrent promote()/book() for the same
+                // member may have just exhausted this exact pack.
+                val locked = userPacks.findByIdForUpdate(candidate.id).orElse(null) ?: return@let null
+                em.refresh(locked)
+                locked.takeIf {
+                    it.status == UserPackStatus.ACTIVE &&
+                    it.expiresAt.isAfter(Instant.now()) &&
+                    (it.unlimited || (it.creditsRemaining ?: 0) > 0) &&
+                    packTypes.findById(it.packTypeId).map { pt -> pt.activity == PackActivity.PILATES }.orElse(false)
+                }
+            }
 
         if (activePack != null) {
             b.paidWith = if (activePack.unlimited) PaidWith.UNLIMITED else PaidWith.PACK

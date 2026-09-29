@@ -53,6 +53,13 @@ class ClassBooking(
     @Column(name = "price_dt", precision = 10, scale = 3, nullable = false) var priceDt: BigDecimal = BigDecimal.ZERO,
     @Column(name = "created_by_admin_id") var createdByAdminId: UUID? = null,
     @Column(name = "waitlist_position") var waitlistPosition: Int? = null,
+    // Set when the CLUB cancels an entire session less than 24h before it
+    // starts and this booking was SINGLE-paid: policy denies an automatic
+    // wallet refund that close to the session, so it is left flagged here for
+    // an admin to refund by hand later (see AdminClassService.cancelSession /
+    // pendingManualRefunds). Never cleared automatically — there is no
+    // manual-refund endpoint yet, only the diagnostic list.
+    @Column(name = "refund_pending", nullable = false) var refundPending: Boolean = false,
     @Column(name = "created_at", nullable = false, updatable = false) val createdAt: Instant = Instant.now(),
     @Column(name = "updated_at", nullable = false) var updatedAt: Instant = Instant.now(),
 )

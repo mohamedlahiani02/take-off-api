@@ -9,6 +9,8 @@
  *   node guest-payment-journeys.cjs <baseUrl> <adminEmail> <adminPassword>
  */
 const assert = require('node:assert/strict')
+const crypto = require('node:crypto')
+const idem = () => crypto.randomUUID()
 
 const BASE = (process.argv[2] || 'http://127.0.0.1:18081') + '/api/v1'
 const ADMIN_EMAIL = process.argv[3] || 'audit-admin@example.test'
@@ -122,7 +124,7 @@ async function main() {
     assert.equal(before.participants.length, 1, 'no fake players yet')
 
     const after = await ok('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
-      amountDt: 60, method: 'CASH', payerName: 'Walk-in guest', coveredSeats: 3,
+      amountDt: 60, method: 'CASH', payerName: 'Walk-in guest', coveredSeats: 3, idempotencyKey: idem(),
     }, admin)
 
     assert.equal(Number(after.totalCollectedDt), 80, '20 + 60 must equal 80')
@@ -139,7 +141,7 @@ async function main() {
   await test('G02', 'A guest payment never credits any wallet', async () => {
     const { organiser, booking } = await shareBooking(1)
     await ok('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
-      amountDt: 60, method: 'CASH', coveredSeats: 3,
+      amountDt: 60, method: 'CASH', coveredSeats: 3, idempotencyKey: idem(),
     }, admin)
     const me = await ok('GET', '/auth/me', undefined, tok(organiser))
     assert.equal(Number(me.walletDt), 100 - 20, 'the guest cash-in must not touch the organiser wallet')
@@ -148,7 +150,7 @@ async function main() {
   await test('G03', 'Overpaying beyond the amount due is refused', async () => {
     const { booking } = await shareBooking(2)
     const r = await req('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
-      amountDt: 61, method: 'CASH', coveredSeats: 3,
+      amountDt: 61, method: 'CASH', coveredSeats: 3, idempotencyKey: idem(),
     }, admin)
     rejects(r, 'overpayment', /guest_payment_exceeds_due/)
   })
@@ -156,7 +158,7 @@ async function main() {
   await test('G04', 'A partial cash-in shows PARTIAL, not PAID', async () => {
     const { booking } = await shareBooking(3)
     const after = await ok('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
-      amountDt: 20, method: 'CARD', coveredSeats: 1,
+      amountDt: 20, method: 'CARD', coveredSeats: 1, idempotencyKey: idem(),
     }, admin)
     assert.equal(Number(after.totalCollectedDt), 40)
     assert.equal(after.paymentState, 'PARTIAL')
@@ -164,22 +166,82 @@ async function main() {
 
   await test('G05', 'A double click (two sequential identical cash-ins) cannot both succeed', async () => {
     const { booking } = await shareBooking(4)
+    // Two genuinely distinct admin actions (different idempotency keys) —
+    // this is testing the balance/seat business rule, not key-replay.
     await ok('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
-      amountDt: 60, method: 'CASH', coveredSeats: 3,
+      amountDt: 60, method: 'CASH', coveredSeats: 3, idempotencyKey: idem(),
     }, admin)
     const second = await req('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
-      amountDt: 60, method: 'CASH', coveredSeats: 3,
+      amountDt: 60, method: 'CASH', coveredSeats: 3, idempotencyKey: idem(),
     }, admin)
     // Refused either way: no seats are open any more, or the amount exceeds
     // what remains due — both are correct depending on which check runs first.
     rejects(second, 'a second identical cash-in after the balance is settled', /guest_payment_exceeds_due|guest_payment_seats_exceed_open/)
   })
 
+  await test('G05b', 'Same idempotency key sent twice (real double-click/retry): one row, one 20 DT collected', async () => {
+    const { booking } = await shareBooking(11)
+    const key = idem()
+    const first = await ok('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
+      amountDt: 20, method: 'CASH', coveredSeats: 1, idempotencyKey: key,
+    }, admin)
+    assert.equal(Number(first.totalCollectedDt), 40, '20 organiser + 20 first cash-in')
+    assert.equal(first.guestPayments.length, 1)
+    const firstPaymentId = first.guestPayments[0].id
+
+    // Exact same key replayed (double-click, or a network retry with no re-click).
+    const replay = await ok('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
+      amountDt: 20, method: 'CASH', coveredSeats: 1, idempotencyKey: key,
+    }, admin)
+    assert.equal(Number(replay.totalCollectedDt), 40, 'the replay must NOT add another 20 DT — still 40, not 60')
+    assert.equal(replay.guestPayments.length, 1, 'no duplicate row was inserted')
+    assert.equal(replay.guestPayments[0].id, firstPaymentId, 'the replay resolves to the SAME payment record')
+  })
+
+  await test('G05c', 'Two DIFFERENT idempotency keys, same amount, same booking: both succeed', async () => {
+    const { booking } = await shareBooking(12)
+    const r1 = await ok('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
+      amountDt: 20, method: 'CASH', coveredSeats: 1, idempotencyKey: idem(),
+    }, admin)
+    assert.equal(Number(r1.totalCollectedDt), 40)
+    const r2 = await ok('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
+      amountDt: 20, method: 'CASH', coveredSeats: 1, idempotencyKey: idem(),
+    }, admin)
+    // Organiser's 20 + two genuinely distinct 20 DT guest cash-ins = 60.
+    assert.equal(Number(r2.totalCollectedDt), 60, 'two distinct 20 DT payments must both be collected')
+    assert.equal(r2.guestPayments.length, 2)
+    assert.notEqual(r2.guestPayments[0].id, r2.guestPayments[1].id)
+  })
+
+  await test('G05d', 'Non-integer coveredSeats is rejected', async () => {
+    const { booking } = await shareBooking(13)
+    const r = await req('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
+      amountDt: 20, method: 'CASH', coveredSeats: 1.5, idempotencyKey: idem(),
+    }, admin)
+    rejects(r, 'non-integer coveredSeats')
+  })
+
+  await test('G05e', 'Negative coveredSeats is rejected at the DTO level', async () => {
+    const { booking } = await shareBooking(14)
+    const r = await req('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
+      amountDt: 20, method: 'CASH', coveredSeats: -1, idempotencyKey: idem(),
+    }, admin)
+    rejects(r, 'negative coveredSeats', /takeoff.validation/)
+  })
+
+  await test('G05f', 'Blank idempotencyKey is rejected', async () => {
+    const { booking } = await shareBooking(15)
+    const r = await req('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
+      amountDt: 20, method: 'CASH', coveredSeats: 1, idempotencyKey: '',
+    }, admin)
+    rejects(r, 'blank idempotencyKey', /takeoff.validation/)
+  })
+
   await test('G06', 'Two concurrent cash-ins against the same balance: only the coverable one succeeds', async () => {
     const { booking } = await shareBooking(5)
     const [r1, r2] = await Promise.all([
-      req('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, { amountDt: 60, method: 'CASH', coveredSeats: 3 }, admin),
-      req('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, { amountDt: 60, method: 'CASH', coveredSeats: 3 }, admin),
+      req('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, { amountDt: 60, method: 'CASH', coveredSeats: 3, idempotencyKey: idem() }, admin),
+      req('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, { amountDt: 60, method: 'CASH', coveredSeats: 3, idempotencyKey: idem() }, admin),
     ])
     const okCount = [r1, r2].filter((r) => r.status < 300).length
     assert.equal(okCount, 1, 'exactly one of the two concurrent 60 DT cash-ins must be accepted')
@@ -187,18 +249,36 @@ async function main() {
     assert.equal(Number(detail.totalCollectedDt), 80, 'never more than the court is worth')
   })
 
+  await test('G06b', 'Two truly concurrent requests with the SAME idempotency key: only one payment row is ever created', async () => {
+    const { booking } = await shareBooking(16)
+    const key = idem()
+    const [r1, r2] = await Promise.all([
+      req('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, { amountDt: 20, method: 'CASH', coveredSeats: 1, idempotencyKey: key }, admin),
+      req('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, { amountDt: 20, method: 'CASH', coveredSeats: 1, idempotencyKey: key }, admin),
+    ])
+    // Both may well come back 2xx (the second sees its own key already
+    // recorded and just returns the same record) — what must never happen is
+    // two distinct payment rows or double-counted money.
+    assert.ok([r1, r2].every((r) => r.status < 300), `both concurrent replays of the same key must succeed, got ${r1.status}/${r2.status}`)
+    const detail = await ok('GET', `/admin/courts/bookings/${booking.bookingId}`, undefined, admin)
+    assert.equal(detail.guestPayments.length, 1, 'the same key raced concurrently must still produce exactly one row')
+    assert.equal(Number(detail.totalCollectedDt), 40, '20 organiser + 20 — never double-billed by the race')
+  })
+
   await test('G07', 'Covering more seats than are open is refused', async () => {
     const { booking } = await shareBooking(6)
     const r = await req('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
-      amountDt: 40, method: 'CASH', coveredSeats: 4,
+      amountDt: 40, method: 'CASH', coveredSeats: 4, idempotencyKey: idem(),
     }, admin)
     rejects(r, 'covering more seats than exist', /guest_payment_seats_exceed_open/)
+    // (Already exercised above — coveredSeats exceeding open seats is G07's
+    // whole point; no separate case duplicates it.)
   })
 
   await test('G08', 'A covered seat is not offered for booking again', async () => {
     const { booking, startsAt } = await shareBooking(7)
     await ok('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
-      amountDt: 60, method: 'CASH', coveredSeats: 3,
+      amountDt: 60, method: 'CASH', coveredSeats: 3, idempotencyKey: idem(),
     }, admin)
     const day = clubDay(startsAt)
     const slots = await ok('GET', `/courts/${court.id}/slots?date=${day}`)
@@ -211,7 +291,7 @@ async function main() {
   await test('G09', 'Voiding a cash-in is traced, not a silent delete, and reopens the balance', async () => {
     const { booking } = await shareBooking(8)
     const payment = await ok('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
-      amountDt: 60, method: 'CASH', coveredSeats: 3,
+      amountDt: 60, method: 'CASH', coveredSeats: 3, idempotencyKey: idem(),
     }, admin)
     const paymentId = payment.guestPayments[0].id
 
@@ -225,17 +305,40 @@ async function main() {
     assert.equal(after.guestPayments[0].voided, true)
     assert.equal(after.guestPayments[0].voidReason, 'Wrong amount entered')
 
-    // And the balance is genuinely reopened: a fresh, correct cash-in succeeds.
+    // And the balance is genuinely reopened: a fresh, correct cash-in succeeds
+    // (a fresh key — this is a new admin action, not a replay of the voided one).
     const redo = await ok('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
-      amountDt: 60, method: 'CASH', coveredSeats: 3,
+      amountDt: 60, method: 'CASH', coveredSeats: 3, idempotencyKey: idem(),
     }, admin)
     assert.equal(Number(redo.totalCollectedDt), 80)
+  })
+
+  await test('G09b', 'Replaying the idempotency key of a VOIDED payment returns it as-is (voided), not a fresh row', async () => {
+    const { booking } = await shareBooking(17)
+    const key = idem()
+    const payment = await ok('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
+      amountDt: 60, method: 'CASH', coveredSeats: 3, idempotencyKey: key,
+    }, admin)
+    const paymentId = payment.guestPayments[0].id
+    await ok('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments/${paymentId}/void`,
+      { reason: 'Test void for replay check' }, admin)
+
+    // Same key again — this must NOT re-litigate against the now-reopened
+    // balance and insert a second (unvoided) row for the same key. It
+    // returns the booking exactly as it now stands: the original row, voided.
+    const replay = await ok('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
+      amountDt: 60, method: 'CASH', coveredSeats: 3, idempotencyKey: key,
+    }, admin)
+    assert.equal(replay.guestPayments.length, 1, 'no second row for the same key, voided or not')
+    assert.equal(replay.guestPayments[0].id, paymentId)
+    assert.equal(replay.guestPayments[0].voided, true, 'the replay reflects the payment as it now stands: voided')
+    assert.equal(Number(replay.totalCollectedDt), 20, 'the voided amount still does not count')
   })
 
   await test('G10', 'A negative or zero amount is refused', async () => {
     const { booking } = await shareBooking(9)
     const r = await req('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
-      amountDt: 0, method: 'CASH', coveredSeats: 0,
+      amountDt: 0, method: 'CASH', coveredSeats: 0, idempotencyKey: idem(),
     }, admin)
     assert.ok(r.status >= 400, 'a zero amount must be refused')
   })
@@ -251,9 +354,23 @@ async function main() {
     assert.equal(Number(detail.totalDueDt), 80)
     // coveredSeats is meaningless on a FULL booking — must be refused, not silently accepted.
     const r = await req('POST', `/admin/courts/bookings/${full.bookingId}/guest-payments`, {
-      amountDt: 10, method: 'CASH', coveredSeats: 1,
+      amountDt: 10, method: 'CASH', coveredSeats: 1, idempotencyKey: idem(),
     }, admin)
     rejects(r, 'coveredSeats on a FULL booking', /guest_payment_seats_not_applicable/)
+  })
+
+  await test('G12', 'coveredSeats and amountDt are intentionally independent: a lump sum need not equal seats * per-seat price', async () => {
+    const { booking } = await shareBooking(18)
+    // Organiser already paid their 20 DT seat (WALLET). Remaining due = 60 DT
+    // across 3 open seats (20 DT/seat if split evenly). A guest instead pays
+    // an uneven 25 DT while claiming 2 of those 3 seats — no 2*20=40 DT rule
+    // is enforced, by design (see AddGuestPaymentRequest doc comment): only
+    // "coveredSeats <= open seats" and "amountDt <= remaining due" apply.
+    const after = await ok('POST', `/admin/courts/bookings/${booking.bookingId}/guest-payments`, {
+      amountDt: 25, method: 'CASH', coveredSeats: 2, idempotencyKey: idem(),
+    }, admin)
+    assert.equal(Number(after.totalCollectedDt), 45, '20 organiser + 25 uneven guest cash-in')
+    assert.equal(after.seatsOpenForSale, 1, 'covering 2 seats reserves 2, regardless of the 25 DT not being 2x20')
   })
 
   const pass = results.filter((r) => r === 'PASS').length
