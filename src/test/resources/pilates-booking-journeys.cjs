@@ -261,19 +261,105 @@ async function main() {
     assert.equal(row.myStatus, 'WAITLIST', 'the schedule must show WAITLIST, never something that reads as reserved')
   })
 
-  await test('PI11', 'Promoting a waitlisted member actually charges them — no free spot', async () => {
+  await test('PI11', 'Promotion only offers the spot — the member\'s own confirmation is what charges', async () => {
     const s = await makeSession({ maxSpots: 1, priceDt: 30 })
     const u1 = await member(100)
     const first = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(u1))
     const u2 = await member(100)
     const waiting = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(u2))
 
-    // Free the spot, then promote.
+    // Free the spot, then promote. Joining a waitlist promised "nothing will
+    // be debited", so an admin click must not charge on its own.
     await ok('DELETE', `/classes/bookings/${first.bookingId}`, undefined, tok(u1))
-    const promoted = await ok('POST', `/admin/classes/bookings/${waiting.bookingId}/promote`, undefined, admin)
-    assert.equal(promoted.status, 'BOOKED')
-    assert.equal(promoted.paidWith, 'SINGLE')
-    assert.equal(await wallet(u2), 70, 'promotion must charge the session price')
+    const proposed = await ok('POST', `/admin/classes/bookings/${waiting.bookingId}/promote`, undefined, admin)
+    assert.equal(proposed.status, 'PROPOSED', 'promotion must propose, not book')
+    assert.equal(await wallet(u2), 100, 'proposing a spot must charge nothing at all')
+
+    const mine = await ok('GET', '/classes/bookings/mine', undefined, tok(u2))
+    const row = mine.find((b) => b.session?.id === s.id)
+    assert.equal(row.status, 'PROPOSED')
+    assert.ok(row.proposalExpiresAt, 'the member must be told how long they have to decide')
+
+    // Now the member themselves accepts: this is the only step that moves money.
+    const confirmed = await ok('POST', `/classes/bookings/${waiting.bookingId}/confirm`, { paymentMethod: 'WALLET', quotedPriceDt: 30 }, tok(u2))
+    assert.equal(confirmed.status, 'BOOKED')
+    assert.equal(confirmed.paidWith, 'SINGLE')
+    assert.equal(await wallet(u2), 70, 'confirming charges the session price exactly once')
+  })
+
+  await test('PI11b', 'Declining a proposal charges nothing and passes the spot to the next member', async () => {
+    const s = await makeSession({ maxSpots: 1, priceDt: 30 })
+    const holder = await member(100)
+    const held = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(holder))
+    const first = await member(100)
+    const firstWait = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(first))
+    const second = await member(100)
+    const secondWait = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(second))
+
+    await ok('DELETE', `/classes/bookings/${held.bookingId}`, undefined, tok(holder))
+    await ok('POST', `/admin/classes/bookings/${firstWait.bookingId}/promote`, undefined, admin)
+
+    const declined = await ok('POST', `/classes/bookings/${firstWait.bookingId}/decline`, undefined, tok(first))
+    assert.equal(declined.status, 'DECLINED')
+    assert.equal(await wallet(first), 100, 'declining must never charge')
+
+    // The freed spot must chain to whoever was next in line, not sit idle.
+    const secondMine = await ok('GET', '/classes/bookings/mine', undefined, tok(second))
+    const secondRow = secondMine.find((b) => b.session?.id === s.id)
+    assert.equal(secondRow.status, 'PROPOSED', 'the next waitlisted member must be offered the spot')
+    assert.equal(await wallet(second), 100, 'and must not be charged for being offered it')
+  })
+
+  await test('PI11c', 'An expired proposal charges nothing and passes the spot on', async () => {
+    const s = await makeSession({ maxSpots: 1, priceDt: 30 })
+    const holder = await member(100)
+    const held = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(holder))
+    const first = await member(100)
+    const firstWait = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(first))
+    const second = await member(100)
+    const secondWait = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(second))
+
+    await ok('DELETE', `/classes/bookings/${held.bookingId}`, undefined, tok(holder))
+    await ok('POST', `/admin/classes/bookings/${firstWait.bookingId}/promote`, undefined, admin)
+
+    // Backdate the hold rather than waiting it out in real time.
+    sql(`update class_bookings set proposal_expires_at = now() - interval '1 minute' where id='${firstWait.bookingId}'`)
+
+    // Any member-facing read settles overdue proposals before answering.
+    await ok('GET', '/classes/bookings/mine', undefined, tok(first))
+
+    const firstMine = await ok('GET', '/classes/bookings/mine', undefined, tok(first))
+    const firstRow = firstMine.find((b) => b.session?.id === s.id)
+    assert.equal(firstRow.status, 'EXPIRED', 'an unanswered proposal must expire, not linger or auto-charge')
+    assert.equal(await wallet(first), 100, 'expiry must never charge')
+
+    const secondMine = await ok('GET', '/classes/bookings/mine', undefined, tok(second))
+    const secondRow = secondMine.find((b) => b.session?.id === s.id)
+    assert.equal(secondRow.status, 'PROPOSED', 'the spot must move to the next member on expiry')
+
+    // And a late confirmation cannot sneak through after the deadline.
+    const late = await req('POST', `/classes/bookings/${firstWait.bookingId}/confirm`, { paymentMethod: 'WALLET' }, tok(first))
+    assert.ok(late.status >= 400, 'confirming after expiry must be refused')
+    assert.equal(await wallet(first), 100)
+  })
+
+  await test('PI11d', 'An admin cannot flip a booking straight to BOOKED through the attendance endpoint', async () => {
+    const s = await makeSession({ maxSpots: 1, priceDt: 30 })
+    const holder = await member(100)
+    await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(holder))
+    const waiter = await member(100)
+    const waiting = await ok('POST', '/classes/bookings', { sessionId: s.id, paymentMethod: 'WALLET' }, tok(waiter))
+    assert.equal(waiting.status, 'WAITLIST')
+
+    // setAttendance used to accept any status at all, which was a way to grant
+    // a real spot with no payment resolution and no member consent.
+    const r = await req('POST', `/admin/classes/bookings/${waiting.bookingId}/attendance`, { status: 'BOOKED' }, admin)
+    assert.ok(r.status >= 400, 'attendance must not be usable to grant a spot: got ' + r.status)
+    assert.equal(await wallet(waiter), 100, 'and nothing may be charged')
+
+    const mine = await ok('GET', '/classes/bookings/mine', undefined, tok(waiter))
+    const row = mine.find((b) => b.session?.id === s.id)
+    assert.equal(row.status, 'WAITLIST', 'the booking must still be on the waitlist')
   })
 
   await test('PI12', 'Promoting without enough funds fails, and the booking stays on the waitlist', async () => {
@@ -289,15 +375,21 @@ async function main() {
     assert.equal(r2.data.status, 'WAITLIST', 'a full class waitlists regardless of balance, since nothing is charged for it')
 
     await ok('DELETE', `/classes/bookings/${first.bookingId}`, undefined, tok(u1))
-    const r = await req('POST', `/admin/classes/bookings/${r2.data.bookingId}/promote`, undefined, admin)
+    // Offering the spot costs nothing, so this succeeds even for a member who
+    // cannot afford it — the money question is asked at confirmation.
+    const proposed = await ok('POST', `/admin/classes/bookings/${r2.data.bookingId}/promote`, undefined, admin)
+    assert.equal(proposed.status, 'PROPOSED')
+    assert.equal(await wallet(u2), 5)
+
+    const r = await req('POST', `/classes/bookings/${r2.data.bookingId}/confirm`, { paymentMethod: 'WALLET' }, tok(u2))
     assert.equal(r.status, 400)
     assert.match(String(r.data?.code ?? ''), /insufficient_funds/)
-    assert.equal(await wallet(u2), 5, 'a failed promotion must not leave a partial charge')
+    assert.equal(await wallet(u2), 5, 'a failed confirmation must not leave a partial charge')
 
     const mine = await ok('GET', '/classes/bookings/mine', undefined, tok(u2))
     const row = mine.find((b) => b.session?.id === s.id)
-    assert.ok(row, 'the waitlisted booking must still be in my bookings')
-    assert.equal(row.status, 'WAITLIST', 'the failed promotion must not have flipped the booking to BOOKED')
+    assert.ok(row, 'the booking must still be in my bookings')
+    assert.equal(row.status, 'PROPOSED', 'a failed confirmation leaves the offer open to retry, never BOOKED')
   })
 
   await test('PI13', 'A second booking for the same session by the same member is refused', async () => {
@@ -376,19 +468,25 @@ async function main() {
     await ok('DELETE', `/classes/bookings/${bookA.bookingId}`, undefined, tok(fillerA))
     await ok('DELETE', `/classes/bookings/${bookB.bookingId}`, undefined, tok(fillerB))
 
+    // Offering both spots charges nothing, so both proposals stand.
+    await ok('POST', `/admin/classes/bookings/${waitA.bookingId}/promote`, undefined, admin)
+    await ok('POST', `/admin/classes/bookings/${waitB.bookingId}/promote`, undefined, admin)
+
+    // The real race is now at confirmation: two confirmations at the same
+    // instant, one shared credit.
     const [rA, rB] = await Promise.all([
-      req('POST', `/admin/classes/bookings/${waitA.bookingId}/promote`, undefined, admin),
-      req('POST', `/admin/classes/bookings/${waitB.bookingId}/promote`, undefined, admin),
+      req('POST', `/classes/bookings/${waitA.bookingId}/confirm`, { paymentMethod: 'WALLET' }, tok(u)),
+      req('POST', `/classes/bookings/${waitB.bookingId}/confirm`, { paymentMethod: 'WALLET' }, tok(u)),
     ])
 
-    // Both promotions must succeed (there was real capacity in both
-    // sessions) — but only one of them may have used the single pack
-    // credit; the other must have fallen through to a real wallet charge,
-    // exactly as book() would for "no valid pack".
-    assert.equal(rA.status, 200, 'promotion A: ' + JSON.stringify(rA.data))
-    assert.equal(rB.status, 200, 'promotion B: ' + JSON.stringify(rB.data))
+    // Both must succeed (there was real capacity in both sessions) — but only
+    // one of them may have used the single pack credit; the other must have
+    // fallen through to a real wallet charge, exactly as book() would for
+    // "no valid pack".
+    assert.equal(rA.status, 200, 'confirmation A: ' + JSON.stringify(rA.data))
+    assert.equal(rB.status, 200, 'confirmation B: ' + JSON.stringify(rB.data))
     const paidWiths = [rA.data.paidWith, rB.data.paidWith].sort()
-    assert.deepEqual(paidWiths, ['PACK', 'SINGLE'], 'exactly one promotion must consume the shared credit, the other must be a wallet charge')
+    assert.deepEqual(paidWiths, ['PACK', 'SINGLE'], 'exactly one confirmation must consume the shared credit, the other must be a wallet charge')
 
     const packs = await ok('GET', '/classes/packs/mine', undefined, tok(u))
     const mine = packs.find((p) => p.packName === pt.name)
@@ -423,6 +521,22 @@ async function main() {
     assert.deepEqual(statuses, [200, 409], `exactly one promote must succeed, the other must be rejected as no-longer-waitlisted, got ${r1.status} ${r2.status}`)
     const loser = r1.status === 409 ? r1 : r2
     assert.match(String(loser.data?.code ?? ''), /not_waitlisted/)
+
+    const afterPropose = await ok('GET', '/classes/packs/mine', undefined, tok(u))
+    assert.equal(
+      afterPropose.find((p) => p.packName === pt.name).creditsRemaining,
+      creditsBefore,
+      'proposing must not touch the credit balance at all',
+    )
+
+    // Double-clicking the member's own confirmation must not double-charge
+    // either: exactly one of the two may take the credit.
+    const [c1, c2] = await Promise.all([
+      req('POST', `/classes/bookings/${waiting.bookingId}/confirm`, {}, tok(u)),
+      req('POST', `/classes/bookings/${waiting.bookingId}/confirm`, {}, tok(u)),
+    ])
+    const confirmStatuses = [c1.status, c2.status].sort((a, b) => a - b)
+    assert.deepEqual(confirmStatuses, [200, 409], `exactly one confirm may win, got ${c1.status} ${c2.status}`)
 
     const after = await ok('GET', '/classes/packs/mine', undefined, tok(u))
     const creditsAfter = after.find((p) => p.packName === pt.name).creditsRemaining
@@ -498,13 +612,18 @@ async function main() {
 
     assert.ok(bookResp.status < 400, 'the fresh booking attempt itself must not error: ' + JSON.stringify(bookResp.data))
 
+    // A proposal holds the spot just as a booking does, so the two of them
+    // together may never occupy more than the one real place.
     const detail = await ok('GET', `/admin/classes/sessions/${s.id}`, undefined, admin)
-    assert.equal(detail.bookedCount, 1, 'the single real spot must never be granted to both competitors at once')
+    assert.equal(
+      detail.bookedCount + detail.proposedCount,
+      1,
+      'the single real spot must never be held by both competitors at once',
+    )
 
-    // Exactly one of the two actually holds the real (charged) spot; the
-    // other must have been cleanly refused (promote: still WAITLIST / 400
-    // full) or itself waitlisted (book: WAITLIST, uncharged) — never both
-    // holding a BOOKED spot, and never a silent double-charge.
+    // Exactly one of the two holds it; the other must have been cleanly
+    // refused (promote: still WAITLIST / 400 full) or itself waitlisted
+    // (book: WAITLIST, uncharged) — never both, and never a silent charge.
     const promoted = promoteResp.status === 200
     const freshBooked = bookResp.data?.status === 'BOOKED'
     assert.ok(promoted !== freshBooked || !(promoted && freshBooked), 'both sides must not simultaneously win the one real spot')

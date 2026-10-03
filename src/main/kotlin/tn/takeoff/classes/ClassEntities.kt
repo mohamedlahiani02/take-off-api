@@ -38,7 +38,15 @@ class ClassSession(
     @Column(name = "updated_at", nullable = false) var updatedAt: Instant = Instant.now(),
 )
 
-enum class ClassBookingStatus { BOOKED, WAITLIST, CANCELLED, ATTENDED, ABSENT, LATE_CANCEL }
+enum class ClassBookingStatus {
+    BOOKED, WAITLIST,
+    // A spot was offered after promotion from the waitlist; the member has
+    // until proposalExpiresAt to confirm (real payment/credit check happens
+    // at confirmation, not here). DECLINED and EXPIRED are distinct from
+    // CANCELLED on purpose — see V40.
+    PROPOSED, DECLINED, EXPIRED,
+    CANCELLED, ATTENDED, ABSENT, LATE_CANCEL,
+}
 enum class PaidWith { SINGLE, PACK, UNLIMITED, COMP, WAITLIST }
 
 @Entity
@@ -60,6 +68,9 @@ class ClassBooking(
     // pendingManualRefunds). Never cleared automatically — there is no
     // manual-refund endpoint yet, only the diagnostic list.
     @Column(name = "refund_pending", nullable = false) var refundPending: Boolean = false,
+    // Set only while status == PROPOSED: the deadline to confirm before the
+    // spot is auto-declined and offered to the next waitlisted member.
+    @Column(name = "proposal_expires_at") var proposalExpiresAt: Instant? = null,
     @Column(name = "created_at", nullable = false, updatable = false) val createdAt: Instant = Instant.now(),
     @Column(name = "updated_at", nullable = false) var updatedAt: Instant = Instant.now(),
 )

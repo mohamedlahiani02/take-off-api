@@ -11,14 +11,12 @@ import tn.takeoff.coaches.CoachRepository
 import tn.takeoff.packs.CreditEntryType
 import tn.takeoff.packs.PackCreditLedger
 import tn.takeoff.packs.PackCreditLedgerRepository
-import tn.takeoff.packs.PackActivity
 import tn.takeoff.packs.PackTypeRepository
 import tn.takeoff.packs.UserPackRepository
 import tn.takeoff.packs.UserPackStatus
 import tn.takeoff.users.WalletEntryType
 import tn.takeoff.users.WalletService
 import tn.takeoff.common.errors.BadRequestException
-import tn.takeoff.common.errors.ConflictException
 import tn.takeoff.common.errors.NotFoundException
 import java.math.BigDecimal
 import java.time.Instant
@@ -43,6 +41,7 @@ data class SessionDetail(
     val bookings: List<ClassBooking>,
     val bookedCount: Long,
     val waitlistCount: Long,
+    val proposedCount: Long,
 )
 
 @Service
@@ -60,6 +59,7 @@ class AdminClassService(
     private val packTypes: PackTypeRepository,
     private val walletService: WalletService,
     private val em: EntityManager,
+    private val waitlistService: ClassWaitlistService,
 ) {
     /**
      * Bookings the old logic marked BOOKED/paidWith=SINGLE without ever
@@ -135,6 +135,7 @@ class AdminClassService(
         bookings = bookings.findBySessionId(s.id),
         bookedCount = bookings.countBySessionIdAndStatus(s.id, ClassBookingStatus.BOOKED),
         waitlistCount = bookings.countBySessionIdAndStatus(s.id, ClassBookingStatus.WAITLIST),
+        proposedCount = bookings.countBySessionIdAndStatus(s.id, ClassBookingStatus.PROPOSED),
     )
 
     @Transactional
@@ -180,7 +181,11 @@ class AdminClassService(
         sessions.save(s)
         val moreThan24hOut = ChronoUnit.HOURS.between(Instant.now(), s.startsAt) >= 24
         bookings.findBySessionId(id).forEach {
-            if (it.status == ClassBookingStatus.BOOKED || it.status == ClassBookingStatus.WAITLIST) {
+            // PROPOSED is included: a member mid-hold on a session the club
+            // just cancelled was never charged (propose() charges nothing),
+            // so this only needs to release the hold, same as WAITLIST.
+            if (it.status == ClassBookingStatus.BOOKED || it.status == ClassBookingStatus.WAITLIST ||
+                it.status == ClassBookingStatus.PROPOSED) {
                 if (it.status == ClassBookingStatus.BOOKED && it.paidWith == PaidWith.PACK && it.userPackId != null) {
                     userPacks.findById(it.userPackId!!).ifPresent { up ->
                         val restored = (up.creditsRemaining ?: 0) + 1
@@ -280,113 +285,46 @@ class AdminClassService(
                 ))
             }
         }
-        b.status = ClassBookingStatus.CANCELLED; b.updatedAt = Instant.now()
+        // A PROPOSED booking was never charged — removing it only needs to
+        // release the hold and let the next waitlisted member have a go.
+        val wasProposed = b.status == ClassBookingStatus.PROPOSED
+        b.status = ClassBookingStatus.CANCELLED; b.proposalExpiresAt = null; b.updatedAt = Instant.now()
         bookings.save(b)
+        if (wasProposed) waitlistService.proposeNext(b.sessionId)
         auditService.log(adminId, "class.remove_student", "class_booking", bookingId.toString())
     }
 
-    /** E-07: promote a waitlisted booking to BOOKED. */
     /**
-     * A waitlisted booking was never charged (correctly — a waitlist spot is
-     * not a spot). Promoting it to BOOKED must resolve real payment the same
-     * way a fresh booking does, or the member gets a free class: check for a
-     * pack valid right now, consuming a credit; otherwise charge the wallet.
-     * If neither works, the promotion itself fails (transaction rolls back)
-     * rather than granting the spot for nothing — the admin sees why and can
-     * decide (chase the member, use a manual override).
+     * E-07: offer a waitlisted booking the next open spot.
      *
-     * Locking mirrors MemberClassController.book() exactly, because the same
-     * three races apply here:
-     *  - the booking row is locked FIRST and its WAITLIST status re-checked
-     *    under that lock, so a double-click / retried promote() on the same
-     *    booking serialises: the second caller sees the already-BOOKED row
-     *    and is rejected, instead of re-charging.
-     *  - the session row is locked and its status/start time/real capacity
-     *    re-checked under that lock (same messages as book()), so promoting
-     *    into a session that was cancelled, has started, or has since filled
-     *    up via a concurrent booking is refused rather than silently
-     *    overbooking.
-     *  - the candidate pack row is locked and re-validated *after* the lock
-     *    (not the value read before it), so two promotions racing over the
-     *    member's last shared credit cannot both consume it: whichever loses
-     *    the lock re-checks and correctly falls through to the same "no
-     *    valid pack" wallet-charge path book() would take.
+     * This no longer charges anyone. A promotion now only *proposes* the
+     * spot (PROPOSED, time-boxed) — nothing is charged until the member
+     * themselves confirms via MemberClassController.confirmProposal, which
+     * is the only code path that ever moves a booking to BOOKED. Joining a
+     * waitlist promises the member "nothing will be debited"; an admin
+     * click used to silently break that promise by charging the wallet with
+     * no fresh consent. See ClassWaitlistService for the full propose /
+     * confirm / decline / expire state machine.
      */
     @Transactional
-    fun promote(bookingId: UUID, adminId: UUID): ClassBooking {
-        val b = bookings.findByIdForUpdate(bookingId).orElseThrow { NotFoundException("class_booking", bookingId) }
-        if (b.status != ClassBookingStatus.WAITLIST) throw ConflictException("takeoff.class.not_waitlisted", "Not on the waitlist")
-        val userId = b.userId ?: throw BadRequestException("takeoff.class.no_user", "Waitlisted booking has no member")
+    fun promote(bookingId: UUID, adminId: UUID): ClassBooking = waitlistService.propose(bookingId, adminId)
 
-        val session = sessions.findByIdForUpdate(b.sessionId).orElseThrow { NotFoundException("class_session", b.sessionId) }
-        if (session.status != SessionStatus.SCHEDULED)
-            throw BadRequestException("takeoff.class.cancelled", "This session has been cancelled")
-        if (session.startsAt.isBefore(Instant.now()))
-            throw BadRequestException("takeoff.class.past_session", "Cannot book a session that has already started")
-
-        val bookedCount = bookings.countBySessionIdAndStatus(b.sessionId, ClassBookingStatus.BOOKED)
-        if (bookedCount >= session.maxSpots)
-            throw BadRequestException("takeoff.class.full", "Session is already full")
-
-        val activePack = userPacks.findByUserIdOrderByPurchasedAtDesc(userId)
-            .firstOrNull {
-                it.status == UserPackStatus.ACTIVE &&
-                it.expiresAt.isAfter(Instant.now()) &&
-                (it.unlimited || (it.creditsRemaining ?: 0) > 0) &&
-                packTypes.findById(it.packTypeId).map { pt -> pt.activity == PackActivity.PILATES }.orElse(false)
-            }
-            ?.let { candidate ->
-                // Re-validate under the pack's own row lock, not the value read
-                // above — another concurrent promote()/book() for the same
-                // member may have just exhausted this exact pack.
-                val locked = userPacks.findByIdForUpdate(candidate.id).orElse(null) ?: return@let null
-                em.refresh(locked)
-                locked.takeIf {
-                    it.status == UserPackStatus.ACTIVE &&
-                    it.expiresAt.isAfter(Instant.now()) &&
-                    (it.unlimited || (it.creditsRemaining ?: 0) > 0) &&
-                    packTypes.findById(it.packTypeId).map { pt -> pt.activity == PackActivity.PILATES }.orElse(false)
-                }
-            }
-
-        if (activePack != null) {
-            b.paidWith = if (activePack.unlimited) PaidWith.UNLIMITED else PaidWith.PACK
-            b.userPackId = activePack.id
-            b.priceDt = BigDecimal.ZERO
-            if (!activePack.unlimited) {
-                val remaining = (activePack.creditsRemaining ?: 0) - 1
-                activePack.creditsRemaining = remaining
-                if (remaining <= 0) activePack.status = UserPackStatus.EXPIRED
-                userPacks.save(activePack)
-                ledger.save(PackCreditLedger(
-                    userPackId = activePack.id, delta = -1,
-                    type = CreditEntryType.CONSUME, reason = "class_booking_promote",
-                    refType = "class_session", refId = session.id.toString(),
-                ))
-            }
-        } else {
-            // No valid pack: the wallet is charged, same as a fresh SINGLE
-            // booking. If funds are insufficient this throws and the whole
-            // promotion rolls back — the spot stays on the waitlist rather
-            // than becoming free.
-            walletService.applyOnce(
-                userId = userId, delta = session.priceDt.negate(), type = WalletEntryType.PAYMENT,
-                reason = "class_single_session", refType = "class_booking", refId = b.id.toString(),
-            )
-            b.paidWith = PaidWith.SINGLE
-            b.priceDt = session.priceDt
-        }
-
-        b.status = ClassBookingStatus.BOOKED; b.waitlistPosition = null; b.updatedAt = Instant.now()
-        bookings.save(b)
-        auditService.log(adminId, "class.promote", "class_booking", bookingId.toString(), mapOf("paidWith" to b.paidWith.name))
-        return b
-    }
-
-    /** E-09: record attendance. */
+    /**
+     * E-09: record attendance. This endpoint's only job is recording whether
+     * a member who held a real (already-paid) spot showed up — never a back
+     * door into BOOKED/PROPOSED state transitions, which must only ever
+     * happen through propose()/confirmProposal()/declineProposal() so a spot
+     * can never be granted without going through real payment resolution and
+     * the member's own consent. ATTENDED/ABSENT are the only statuses this
+     * can set.
+     */
     @Transactional
     fun setAttendance(bookingId: UUID, status: ClassBookingStatus, adminId: UUID): ClassBooking {
-        val b = bookings.findById(bookingId).orElseThrow { NotFoundException("class_booking", bookingId) }
+        if (status != ClassBookingStatus.ATTENDED && status != ClassBookingStatus.ABSENT)
+            throw BadRequestException("takeoff.class.invalid_attendance_status", "Attendance can only be set to ATTENDED or ABSENT")
+        val b = bookings.findByIdForUpdate(bookingId).orElseThrow { NotFoundException("class_booking", bookingId) }
+        if (b.status != ClassBookingStatus.BOOKED)
+            throw BadRequestException("takeoff.class.not_booked", "Only a confirmed booking can have attendance recorded")
         b.status = status; b.updatedAt = Instant.now()
         bookings.save(b)
         auditService.log(adminId, "class.attendance", "class_booking", bookingId.toString(), mapOf("status" to status.name))

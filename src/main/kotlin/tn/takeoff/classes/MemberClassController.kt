@@ -44,6 +44,7 @@ data class PublicSessionDto(
     val status: SessionStatus,
     val myBookingId: UUID?,
     val myStatus: ClassBookingStatus?,
+    val myProposalExpiresAt: Instant?,
 )
 
 @RestController
@@ -60,6 +61,7 @@ class MemberClassController(
     private val walletService: WalletService,
     private val coaches: tn.takeoff.coaches.CoachRepository,
     private val em: EntityManager,
+    private val waitlistService: ClassWaitlistService,
 ) {
     companion object {
         /**
@@ -82,6 +84,13 @@ class MemberClassController(
         @RequestParam to: String,
         @RequestHeader(name = "Authorization", required = false) auth: String?,
     ): List<PublicSessionDto> {
+        // Lazily settle any proposal whose hold has passed before answering,
+        // so a member who checks right after their own window closes (or
+        // the next waitlisted member checking for a new offer) sees it
+        // reflected immediately rather than waiting for the next scheduled
+        // sweep tick.
+        waitlistService.expireStaleProposals()
+
         val fromInstant = Instant.parse(from)
         val toInstant = Instant.parse(to)
         val memberId = resolveMemberId(auth)
@@ -97,7 +106,10 @@ class MemberClassController(
 
         return sessionList.map { s ->
             val all = bookings.findBySessionId(s.id)
-            val booked = all.count { it.status == ClassBookingStatus.BOOKED || it.status == ClassBookingStatus.ATTENDED }
+            // A PROPOSED hold occupies the spot just as a BOOKED one does —
+            // a fresh booker must not be able to grab a seat someone else is
+            // mid-decision on.
+            val booked = all.count { it.status in ClassWaitlistService.OCCUPYING_STATUSES }
             val waitlist = all.count { it.status == ClassBookingStatus.WAITLIST }
             val mine = myBookings[s.id]
             PublicSessionDto(
@@ -109,6 +121,7 @@ class MemberClassController(
                 priceDt = s.priceDt, maxSpots = s.maxSpots,
                 bookedSpots = booked, waitlistCount = waitlist, status = s.status,
                 myBookingId = mine?.id, myStatus = mine?.status,
+                myProposalExpiresAt = mine?.takeIf { it.status == ClassBookingStatus.PROPOSED }?.proposalExpiresAt,
             )
         }
     }
@@ -144,11 +157,16 @@ class MemberClassController(
         val all = bookings.findBySessionId(session.id)
         val existing = all.firstOrNull {
             it.userId == claims.userId &&
-            it.status !in listOf(ClassBookingStatus.CANCELLED, ClassBookingStatus.LATE_CANCEL)
+            it.status !in listOf(
+                ClassBookingStatus.CANCELLED, ClassBookingStatus.LATE_CANCEL,
+                // A declined or expired proposal is a closed chapter, not an
+                // active claim on the session — the member can book fresh.
+                ClassBookingStatus.DECLINED, ClassBookingStatus.EXPIRED,
+            )
         }
         if (existing != null) throw BadRequestException("takeoff.class.already_booked", "Already booked")
 
-        val bookedCount = all.count { it.status == ClassBookingStatus.BOOKED || it.status == ClassBookingStatus.ATTENDED }
+        val bookedCount = all.count { it.status in ClassWaitlistService.OCCUPYING_STATUSES }
         val isFull = bookedCount >= session.maxSpots
         val waitlistPos = if (isFull) all.count { it.status == ClassBookingStatus.WAITLIST } + 1 else null
 
@@ -245,6 +263,11 @@ class MemberClassController(
         val booking = bookings.findById(id).orElseThrow { NotFoundException("booking", id) }
         if (booking.userId != claims.userId) throw BadRequestException("takeoff.forbidden", "Not your booking")
         if (booking.status == ClassBookingStatus.CANCELLED) throw BadRequestException("takeoff.class.already_cancelled", "Already cancelled")
+        // A PROPOSED hold isn't a confirmed booking yet — nothing was
+        // charged, so there's nothing to "cancel". Use confirm/decline so
+        // the spot correctly chains to the next waitlisted member.
+        if (booking.status == ClassBookingStatus.PROPOSED)
+            throw BadRequestException("takeoff.class.use_confirm_or_decline", "Confirm or decline this proposal instead of cancelling it")
 
         val session = sessions.findById(booking.sessionId).orElse(null)
         val hoursUntil = if (session != null) ChronoUnit.HOURS.between(Instant.now(), session.startsAt) else 0L
@@ -291,14 +314,54 @@ class MemberClassController(
         bookings.save(booking)
     }
 
+    data class ConfirmProposalRequest(
+        val paymentMethod: ClassPaymentMethod? = null,
+        // Echoed from what the proposal screen showed; checked, never trusted.
+        val quotedPriceDt: BigDecimal? = null,
+    )
+
+    /**
+     * Step 2 of the waitlist-promotion flow: the member accepts the offered
+     * spot. Nothing was charged when the proposal was created — this is the
+     * only moment a pack credit is consumed or the wallet is actually
+     * debited. See ClassWaitlistService.confirmProposal for the full
+     * re-validation (pack/capacity can both have changed during the hold).
+     */
+    @PostMapping("/bookings/{id}/confirm")
+    @Transactional
+    fun confirmProposal(
+        @PathVariable id: UUID,
+        @RequestBody(required = false) req: ConfirmProposalRequest?,
+        @AuthenticationPrincipal claims: JwtService.Claims,
+    ): Map<String, Any?> {
+        val b = waitlistService.confirmProposal(id, claims.userId, req?.paymentMethod, req?.quotedPriceDt)
+        return mapOf("bookingId" to b.id, "status" to b.status, "paidWith" to b.paidWith, "priceDt" to b.priceDt)
+    }
+
+    /**
+     * Step 2, the other branch: the member explicitly says no. Nothing was
+     * ever charged, so there is nothing to refund — the spot is offered to
+     * the next waitlisted member.
+     */
+    @PostMapping("/bookings/{id}/decline")
+    @Transactional
+    fun declineProposal(@PathVariable id: UUID, @AuthenticationPrincipal claims: JwtService.Claims): Map<String, Any?> {
+        val b = waitlistService.declineProposal(id, claims.userId)
+        return mapOf("bookingId" to b.id, "status" to b.status)
+    }
+
     @GetMapping("/bookings/mine")
     fun myBookings(@AuthenticationPrincipal claims: JwtService.Claims): List<Map<String, Any?>> {
+        // Same lazy settle as schedule() — a member opening "my bookings"
+        // right after their own hold lapsed sees EXPIRED immediately.
+        waitlistService.expireStaleProposals()
         val typeMap = types.findAll().associateBy { it.id }
         return bookings.findByUserIdOrderByCreatedAtDesc(claims.userId).map { b ->
             val s = sessions.findById(b.sessionId).orElse(null)
             mapOf(
                 "bookingId" to b.id, "status" to b.status, "paidWith" to b.paidWith,
                 "priceDt" to b.priceDt, "waitlistPosition" to b.waitlistPosition, "createdAt" to b.createdAt,
+                "proposalExpiresAt" to b.proposalExpiresAt,
                 "session" to if (s != null) mapOf(
                     "id" to s.id, "startsAt" to s.startsAt, "durationMin" to s.durationMin,
                     "className" to (typeMap[s.classTypeId]?.name ?: "Class"), "status" to s.status,
